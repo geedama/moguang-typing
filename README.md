@@ -6,9 +6,11 @@
 
 当前版本见 [VERSION](VERSION)。
 
-## 安装
+## 下载与安装
 
-从仓库的 Releases 页面下载最新的 `MoguangTyping-版本号.zip`，完整解压后运行 `安装到呆萌ACT.cmd`。安装时需要关闭 ACT 和呆萌启动器。
+普通用户请前往 [最新版本下载页](https://github.com/geedama/moguang-typing/releases/latest)，在页面下方的 **Assets** 中下载 `MoguangTyping-版本号.zip`。不要使用 `Code → Download ZIP`，那是源码包，不能直接安装。
+
+下载后完整解压，并在关闭 ACT 和呆萌启动器的情况下运行 `安装到呆萌ACT.cmd`。
 
 安装器会要求选择呆萌 ACT 根目录，即包含 `Advanced Combat Tracker.exe`、`DLibs` 和 `Config` 的目录。安装完成后启动 ACT，在插件列表中确认 `KeyboundProbe.ActPlugin.dll` 已加载。
 
