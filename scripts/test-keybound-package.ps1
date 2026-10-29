@@ -23,6 +23,13 @@ function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Package integration test failed: $Message" }
 }
 
+foreach ($name in @('安装到呆萌ACT.cmd', '卸载.cmd')) {
+    $cmdPath = Join-Path $PackageDirectory $name
+    $bytes = [IO.File]::ReadAllBytes($cmdPath)
+    Assert-True (-not @($bytes | Where-Object { $_ -gt 0x7F }).Count) `
+        "$name must contain ASCII bytes only for cmd.exe compatibility"
+}
+
 foreach ($name in @('Install-KeyboundProbe.ps1', 'Uninstall-KeyboundProbe.ps1')) {
     $scriptPath = Join-Path $PackageDirectory $name
     $bytes = [IO.File]::ReadAllBytes($scriptPath)
