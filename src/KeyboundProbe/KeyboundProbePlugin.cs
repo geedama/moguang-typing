@@ -19,6 +19,7 @@ namespace ActEnhanced.KeyboundProbe
         private TextBox noteBox;
         private Timer uiTimer;
         private FfxivNetworkTap networkTap;
+        private ushort actorCastOpcode;
         private ProbeCaptureSession capture;
         private string captureDirectory;
         private KeyboundLogDecoder decoder;
@@ -60,6 +61,8 @@ namespace ActEnhanced.KeyboundProbe
         private NumericUpDown autoJitterPercent;
         private NumericUpDown autoSubmitDelayMin;
         private NumericUpDown autoSubmitDelayMax;
+        private NumericUpDown autoTypingSubmitMinimum;
+        private NumericUpDown autoTypingSubmitBudget;
         private ComboBox autoTargetOrder;
         private Label autoInputStatus;
 #if LEGACY_DALAMUD_BRIDGE
@@ -128,8 +131,10 @@ namespace ActEnhanced.KeyboundProbe
                 "Plugins", "KeyboundProbe", "KeyboundProbe.auto.log");
             overlayDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
                 "Plugins", "KeyboundProbe", "overlay");
+            actorCastOpcode = LoadActorCastOpcode();
             WriteAutomationDiagnostic("PLUGIN_INIT", 0, String.Empty, "version=" +
-                Assembly.GetExecutingAssembly().GetName().Version);
+                Assembly.GetExecutingAssembly().GetName().Version + "; ActorCastOpcode=0x" +
+                actorCastOpcode.ToString("X"));
             automationSettings = KeyboundActSettings.Load(automationSettingsPath);
             wordTable = KeyboundWordTable.Load(wordPath);
             decoder = new KeyboundLogDecoder(wordTable);
@@ -205,8 +210,13 @@ namespace ActEnhanced.KeyboundProbe
             autoSubmitDelayMin = AddNumeric(rhythmControls, 0, 2000, automationSettings.SubmitDelayMinMs, 65);
             rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "–" });
             autoSubmitDelayMax = AddNumeric(rhythmControls, 0, 2000, automationSettings.SubmitDelayMaxMs, 65);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text =
-                "ms；输入→回车总上限 " + GameInputSender.DirectTypingToSubmitBudgetMs + "ms" });
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms；输入→回车最短" });
+            autoTypingSubmitMinimum = AddNumeric(rhythmControls, 0, 10000,
+                automationSettings.TypingSubmitMinimumMs, 70);
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms；最长预算" });
+            autoTypingSubmitBudget = AddNumeric(rhythmControls, 250, 10000,
+                automationSettings.TypingSubmitBudgetMs, 70);
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms" });
             root.Controls.Add(rhythmControls);
 
             var orderControls = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
@@ -226,6 +236,8 @@ namespace ActEnhanced.KeyboundProbe
             autoJitterPercent.ValueChanged += saveRhythm;
             autoSubmitDelayMin.ValueChanged += saveRhythm;
             autoSubmitDelayMax.ValueChanged += saveRhythm;
+            autoTypingSubmitMinimum.ValueChanged += saveRhythm;
+            autoTypingSubmitBudget.ValueChanged += saveRhythm;
             autoTargetOrder.SelectedIndexChanged += saveRhythm;
             SaveAutomationSettings();
             autoInputStatus = AddLabel(root, "自动输入：已停用");
@@ -233,7 +245,7 @@ namespace ActEnhanced.KeyboundProbe
             {
                 AutoSize = true,
                 MaximumSize = new System.Drawing.Size(760, 0),
-                Text = "题目来自 ACT 直读 KTGEWord；通过 FF14 窗口消息逐字输入并逐字校验 KTGInput 回显，一次锁定一只怪物。从开始输入到回车最多 1500ms；输入框清空或同实体题目切换后继续，ACT 成功/死亡事件用于延迟佐证。KTGInput 不可读时禁止盲打。"
+                Text = "题目来自 ACT 直读 KTGEWord；通过 FF14 窗口消息逐字输入并逐字校验 KTGInput 回显，一次锁定一只怪物。输入到回车的最短时间和最长预算可在上方调整；输入框清空或同实体题目切换后继续，ACT 成功/死亡事件用于延迟佐证。KTGInput 不可读时禁止盲打。"
             });
 
             root.Controls.Add(new Label { AutoSize = true, Text = "当前题目" });
@@ -365,8 +377,15 @@ namespace ActEnhanced.KeyboundProbe
             automationSettings.JitterPercent = Decimal.ToInt32(autoJitterPercent.Value);
             automationSettings.SubmitDelayMinMs = Decimal.ToInt32(autoSubmitDelayMin.Value);
             automationSettings.SubmitDelayMaxMs = Decimal.ToInt32(autoSubmitDelayMax.Value);
+            automationSettings.TypingSubmitMinimumMs = Decimal.ToInt32(autoTypingSubmitMinimum.Value);
+            automationSettings.TypingSubmitBudgetMs = Decimal.ToInt32(autoTypingSubmitBudget.Value);
             automationSettings.TargetOrder = TargetOrderName(autoTargetOrder.SelectedIndex);
+            automationSettings.Normalize();
             SaveAutomationSettings();
+            if (autoTypingSubmitMinimum.Value != automationSettings.TypingSubmitMinimumMs)
+                autoTypingSubmitMinimum.Value = automationSettings.TypingSubmitMinimumMs;
+            if (autoTypingSubmitBudget.Value != automationSettings.TypingSubmitBudgetMs)
+                autoTypingSubmitBudget.Value = automationSettings.TypingSubmitBudgetMs;
         }
 
         private void SaveAutomationSettings()
@@ -498,9 +517,32 @@ namespace ActEnhanced.KeyboundProbe
 
         private void OnNetworkReceived(string connection, long epoch, byte[] message)
         {
+            uint actorId;
+            uint actionId;
+            double castSeconds;
+            if (PacketMetadata.TryReadActorCast(message, actorCastOpcode,
+                out actorId, out actionId, out castSeconds) &&
+                KeyboundCombatPlanner.IsStopCastAction(actionId))
+            {
+                combatPlanner.RecordCastStart(actorId, actionId, castSeconds, DateTime.UtcNow);
+                WriteAutomationDiagnostic("CAST_FAST", actorId, String.Empty,
+                    "action=0x" + actionId.ToString("X") + "; castSeconds=" +
+                    castSeconds.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture) +
+                    "; opcode=0x" + actorCastOpcode.ToString("X"));
+            }
             ProbeCaptureSession current = capture;
             if (current != null && current.IsAccepting)
                 current.Record(connection, epoch, message);
+        }
+
+        private static ushort LoadActorCastOpcode()
+        {
+            string dataRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
+                "Plugins", "Data", "FFXIV_ACT_Plugin");
+            ushort value = PacketMetadata.LoadOpcode(
+                Path.Combine(dataRoot, "Chinese", "OpCode.txt"), "ActorCast");
+            return value != 0 ? value : PacketMetadata.LoadOpcode(
+                Path.Combine(dataRoot, "Global", "OpCode.txt"), "ActorCast");
         }
 
         private void OnActLogLineRead(bool isImport, LogLineEventArgs logInfo)
@@ -712,10 +754,12 @@ namespace ActEnhanced.KeyboundProbe
             TryStartActivityPulse();
             if (activityPulseActive)
                 return;
+            bool visualInterferenceActive = DateTime.UtcNow <= visualInterferenceUntilUtc;
             var candidates = new List<KtgMemoryTarget>();
             foreach (KtgMemoryTarget target in available)
             {
-                if (target.Obstructed || String.IsNullOrWhiteSpace(target.Text) ||
+                if (!KeyboundCombatPlanner.CanUsePrompt(target.Obstructed,
+                        visualInterferenceActive) || String.IsNullOrWhiteSpace(target.Text) ||
                     GameInputSender.NormalizeChineseAnswer(target.Text).Length == 0 ||
                     directCompletedPrompts.IsSuppressed(target.EntityId, target.Text))
                     continue;
@@ -723,7 +767,9 @@ namespace ActEnhanced.KeyboundProbe
             }
             if (candidates.Count == 0)
             {
-                autoInputStatus.Text = "自动输入：等待可提交的中文题目";
+                autoInputStatus.Text = visualInterferenceActive
+                    ? "自动输入：视觉妨碍中，等待可读取题目"
+                    : "自动输入：等待可提交的中文题目";
                 return;
             }
             DateTime selectionUtc = DateTime.UtcNow;
@@ -779,6 +825,9 @@ namespace ActEnhanced.KeyboundProbe
             int submitDelay = blatant ? 0 : RandomDelay(random,
                 automationSettings.SubmitDelayMinMs,
                 humanize ? automationSettings.SubmitDelayMaxMs : automationSettings.SubmitDelayMinMs);
+            automationSettings.Normalize();
+            int typingSubmitMinimumMs = automationSettings.TypingSubmitMinimumMs;
+            int typingSubmitBudgetMs = automationSettings.TypingSubmitBudgetMs;
             string typedText = GameInputSender.NormalizeChineseAnswer(target.Text);
             autoInputStatus.Text = "自动输入：窗口投递 “" + target.Text + "” → 0x" +
                 target.EntityId.ToString("X8");
@@ -805,30 +854,37 @@ namespace ActEnhanced.KeyboundProbe
                     target.EntityId, target.Text, result + "; " + GameInputSender.DescribeFfxivInputTarget());
                 if (result == GameInputResult.Sent)
                 {
-                    DateTime submitDeadlineUtc = DateTime.UtcNow.AddMilliseconds(
-                        GameInputSender.DirectTypingToSubmitBudgetMs);
+                    DateTime typingStartedUtc = DateTime.UtcNow;
+                    DateTime earliestSubmitUtc = typingStartedUtc.AddMilliseconds(
+                        typingSubmitMinimumMs);
+                    DateTime submitDeadlineUtc = typingStartedUtc.AddMilliseconds(
+                        typingSubmitBudgetMs);
                     result = TypeTextWithEcho(target, typedText, characterDelay, current,
                         submitDeadlineUtc);
                     echoVerified = result == GameInputResult.Sent;
                     WriteAutomationDiagnostic(result == GameInputResult.Sent ? "TEXT_OK" : "TEXT_FAIL",
                         target.EntityId, target.Text, result + "; typed=" + typedText +
-                        "; budgetMs=" + GameInputSender.DirectTypingToSubmitBudgetMs);
+                        "; minimumMs=" + typingSubmitMinimumMs +
+                        "; budgetMs=" + typingSubmitBudgetMs);
                     if (result == GameInputResult.Sent)
                     {
                         int remaining = RemainingMilliseconds(submitDeadlineUtc);
                         int boundedSubmitDelay = Math.Min(submitDelay, Math.Max(0, remaining - 10));
-                        if (boundedSubmitDelay != 0)
-                            System.Threading.Thread.Sleep(boundedSubmitDelay);
-                        result = RemainingMilliseconds(submitDeadlineUtc) > 0
+                        DateTime configuredSubmitUtc = DateTime.UtcNow.AddMilliseconds(boundedSubmitDelay);
+                        DateTime notBeforeUtc = configuredSubmitUtc > earliestSubmitUtc
+                            ? configuredSubmitUtc : earliestSubmitUtc;
+                        result = WaitUntilSubmitWindow(notBeforeUtc, submitDeadlineUtc, current)
                             ? GameInputSender.PostEnterToFfxiv(current)
-                            : GameInputResult.NativeInputFailed;
+                            : (current() ? GameInputResult.NativeInputFailed : GameInputResult.Cancelled);
                         if (result == GameInputResult.Sent)
                             inputCleared = WaitForInputText(String.Empty,
                                 Math.Min(350, RemainingMilliseconds(submitDeadlineUtc)), current);
                     }
                     WriteAutomationDiagnostic(result == GameInputResult.Sent ? "ENTER_OK" : "ENTER_FAIL",
                         target.EntityId, target.Text, result + "; remainingMs=" +
-                        RemainingMilliseconds(submitDeadlineUtc) + "; inputCleared=" + inputCleared);
+                        RemainingMilliseconds(submitDeadlineUtc) + "; elapsedMs=" +
+                        Math.Max(0, (int)(DateTime.UtcNow - typingStartedUtc).TotalMilliseconds) +
+                        "; inputCleared=" + inputCleared);
                 }
                 if (autoInputStatus == null || autoInputStatus.IsDisposed)
                     return;
@@ -844,6 +900,19 @@ namespace ActEnhanced.KeyboundProbe
             worker.IsBackground = true;
             worker.SetApartmentState(System.Threading.ApartmentState.STA);
             worker.Start();
+        }
+
+        private static bool WaitUntilSubmitWindow(DateTime notBeforeUtc, DateTime deadlineUtc,
+            Func<bool> current)
+        {
+            while (DateTime.UtcNow < notBeforeUtc)
+            {
+                if (!current() || DateTime.UtcNow >= deadlineUtc)
+                    return false;
+                int remaining = Math.Max(1, (int)(notBeforeUtc - DateTime.UtcNow).TotalMilliseconds);
+                System.Threading.Thread.Sleep(Math.Min(25, remaining));
+            }
+            return current() && DateTime.UtcNow < deadlineUtc;
         }
 
         private void ApplyDirectInputResult(long sequence, KtgMemoryTarget target, GameInputResult result,
@@ -1468,12 +1537,18 @@ namespace ActEnhanced.KeyboundProbe
             }
             if (signal.Kind == KeyboundCombatSignalKind.CastStarted)
             {
+                DateTime observedUtc = DateTime.UtcNow;
+                DateTime castStartUtc = KeyboundCombatPlanner.ResolveCastStartTime(
+                    signal.ActionId, signal.UtcTime, observedUtc);
                 combatPlanner.RecordCastStart(signal.SourceId, signal.ActionId,
-                    signal.CastSeconds, signal.UtcTime);
+                    signal.CastSeconds, castStartUtc);
                 priorityLabel.Text = "优先级：" + combatPlanner.Describe();
                 WriteAutomationDiagnostic("CAST_START", signal.SourceId, signal.ActionName,
                     "action=0x" + signal.ActionId.ToString("X") + "; castSeconds=" +
                     signal.CastSeconds.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture) +
+                    "; eventLagMs=" + Math.Max(0, (int)(observedUtc - signal.UtcTime).TotalMilliseconds) +
+                    "; timing=" + (KeyboundCombatPlanner.IsStopCastAction(signal.ActionId)
+                        ? "observed" : "event") +
                     "; bnpc=0x" + combatPlanner.GetActorType(signal.SourceId).ToString("X"));
                 return;
             }

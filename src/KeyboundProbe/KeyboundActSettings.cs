@@ -16,6 +16,8 @@ namespace ActEnhanced.KeyboundProbe
         public int JitterPercent = 40;
         public int SubmitDelayMinMs = 200;
         public int SubmitDelayMaxMs = 500;
+        public int TypingSubmitMinimumMs = GameInputSender.DirectTypingToSubmitMinimumMs;
+        public int TypingSubmitBudgetMs = GameInputSender.DirectTypingToSubmitBudgetMs;
         public string TargetOrder = "slot_asc";
 
         public static KeyboundActSettings Load(string path)
@@ -43,6 +45,10 @@ namespace ActEnhanced.KeyboundProbe
                 value.JitterPercent = ReadInt(entries, "JitterPercent", value.JitterPercent, 0, 80);
                 value.SubmitDelayMinMs = ReadInt(entries, "SubmitDelayMinMs", value.SubmitDelayMinMs, 0, 2000);
                 value.SubmitDelayMaxMs = ReadInt(entries, "SubmitDelayMaxMs", value.SubmitDelayMaxMs, 0, 2000);
+                value.TypingSubmitMinimumMs = ReadInt(entries, "TypingSubmitMinimumMs",
+                    value.TypingSubmitMinimumMs, 0, 10000);
+                value.TypingSubmitBudgetMs = ReadInt(entries, "TypingSubmitBudgetMs",
+                    value.TypingSubmitBudgetMs, 250, 10000);
                 string order;
                 if (entries.TryGetValue("TargetOrder", out order) &&
                     (order == "slot_asc" || order == "slot_desc" || order == "shortest" || order == "longest"))
@@ -71,6 +77,8 @@ namespace ActEnhanced.KeyboundProbe
                 "JitterPercent=" + JitterPercent.ToString(CultureInfo.InvariantCulture),
                 "SubmitDelayMinMs=" + SubmitDelayMinMs.ToString(CultureInfo.InvariantCulture),
                 "SubmitDelayMaxMs=" + SubmitDelayMaxMs.ToString(CultureInfo.InvariantCulture),
+                "TypingSubmitMinimumMs=" + TypingSubmitMinimumMs.ToString(CultureInfo.InvariantCulture),
+                "TypingSubmitBudgetMs=" + TypingSubmitBudgetMs.ToString(CultureInfo.InvariantCulture),
                 "TargetOrder=" + TargetOrder
             });
         }
@@ -99,7 +107,7 @@ namespace ActEnhanced.KeyboundProbe
             return total;
         }
 
-        private void Normalize()
+        internal void Normalize()
         {
             StartDelayMinMs = Clamp(StartDelayMinMs, 0, 5000);
             StartDelayMaxMs = Clamp(StartDelayMaxMs, StartDelayMinMs, 5000);
@@ -107,6 +115,9 @@ namespace ActEnhanced.KeyboundProbe
             JitterPercent = Clamp(JitterPercent, 0, 80);
             SubmitDelayMinMs = Clamp(SubmitDelayMinMs, 0, 2000);
             SubmitDelayMaxMs = Clamp(SubmitDelayMaxMs, SubmitDelayMinMs, 2000);
+            TypingSubmitMinimumMs = Clamp(TypingSubmitMinimumMs, 0, 10000);
+            TypingSubmitBudgetMs = Clamp(TypingSubmitBudgetMs,
+                Math.Max(250, TypingSubmitMinimumMs), 10000);
         }
 
         private static int NextRange(Random random, int minimum, int maximum)

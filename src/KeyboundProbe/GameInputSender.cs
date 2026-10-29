@@ -26,7 +26,8 @@ namespace ActEnhanced.KeyboundProbe
 
     public static class GameInputSender
     {
-        internal const int DirectTypingToSubmitBudgetMs = 1500;
+        internal const int DirectTypingToSubmitMinimumMs = 1500;
+        internal const int DirectTypingToSubmitBudgetMs = 4000;
         private const uint InputKeyboard = 1;
         private const uint KeyEventKeyUp = 0x0002;
         private const uint KeyEventUnicode = 0x0004;

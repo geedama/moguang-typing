@@ -11,6 +11,7 @@ internal static class KeyboundProbeTests
     private static void Main()
     {
         TestHeader();
+        TestActorCastPacket();
         TestCapture();
         TestDecoder();
         TestKtgMemoryLayout();
@@ -22,8 +23,9 @@ internal static class KeyboundProbeTests
         TestDalamudLauncherGuards();
         TestGameInputGuards();
         TestOverlayServer();
-        Assert(GameInputSender.DirectTypingToSubmitBudgetMs == 1500,
-            "direct typing-to-submit budget");
+        Assert(GameInputSender.DirectTypingToSubmitMinimumMs == 1500 &&
+            GameInputSender.DirectTypingToSubmitBudgetMs == 4000,
+            "direct typing-to-submit dynamic range");
         Assert(KeyboundOverlayServer.JsonString("题目\n\"测试\"") == "\"题目\\n\\\"测试\\\"\"",
             "overlay JSON escaping");
         if (failures != 0)
@@ -32,6 +34,40 @@ internal static class KeyboundProbeTests
             Environment.Exit(1);
         }
         Console.WriteLine("PASS: KeyboundProbe core tests");
+    }
+
+    private static void TestActorCastPacket()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "KeyboundOpcode-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "OpCode.txt");
+        try
+        {
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(path, "ActorControl|123\r\nActorCast|1c9\r\n");
+            Assert(PacketMetadata.LoadOpcode(path, "ActorCast") == 0x1C9,
+                "ActorCast opcode loading");
+        }
+        finally
+        {
+            try { Directory.Delete(directory, true); } catch { }
+        }
+
+        byte[] packet = new byte[64];
+        Array.Copy(BitConverter.GetBytes((uint)packet.Length), 0, packet, 0, 4);
+        Array.Copy(BitConverter.GetBytes(0x40001234u), 0, packet, 4, 4);
+        Array.Copy(BitConverter.GetBytes((ushort)0x1C9), 0, packet, PacketMetadata.OpcodeOffset, 2);
+        Array.Copy(BitConverter.GetBytes((ushort)KeyboundCombatPlanner.CurseGazeAction), 0,
+            packet, PacketMetadata.ActorCastActionOffset, 2);
+        Array.Copy(BitConverter.GetBytes(4.7f), 0, packet, PacketMetadata.ActorCastTimeOffset, 4);
+        uint actorId;
+        uint actionId;
+        double castSeconds;
+        Assert(PacketMetadata.TryReadActorCast(packet, 0x1C9, out actorId, out actionId,
+            out castSeconds) && actorId == 0x40001234u &&
+            actionId == KeyboundCombatPlanner.CurseGazeAction && Math.Abs(castSeconds - 4.7) < 0.001,
+            "raw ActorCast packet decoding");
+        Assert(!PacketMetadata.TryReadActorCast(packet, 0x1CA, out actorId, out actionId,
+            out castSeconds), "raw ActorCast rejects another opcode");
     }
 
     private static void TestKtgMemoryLayout()
@@ -88,6 +124,10 @@ internal static class KeyboundProbeTests
         planner.SetDirectorPhase(2);
         Assert(planner.CombatStage == 1 && planner.CanAttack,
             "director active phase starts semantic P1 and permits attacks");
+        Assert(!KeyboundCombatPlanner.CanUsePrompt(true, false) &&
+            KeyboundCombatPlanner.CanUsePrompt(true, true) &&
+            KeyboundCombatPlanner.CanUsePrompt(false, false),
+            "obstructed prompts are only eligible during confirmed visual interference");
         planner.ObserveTarget(0x40000020);
         planner.ObserveTarget(0x40000010);
         planner.ObserveTarget(0x40000020);
@@ -111,16 +151,25 @@ internal static class KeyboundProbeTests
         const uint missile = 0x42000003;
         const uint cactuar = 0x42000004;
         const uint shield = 0x42000005;
+        const uint behemoth = 0x42000006;
+        const uint meteor = 0x42000007;
+        const uint barrier = 0x42000008;
         planner.ObserveActor(normal, 0x4C82);
         planner.ObserveActor(reward, KeyboundCombatPlanner.RewardType);
         planner.ObserveActor(missile, KeyboundCombatPlanner.MissileType);
         planner.ObserveActor(cactuar, KeyboundCombatPlanner.CactuarType);
         planner.ObserveActor(shield, KeyboundCombatPlanner.ShieldType);
+        planner.ObserveActor(behemoth, KeyboundCombatPlanner.BehemothType);
+        planner.ObserveActor(meteor, KeyboundCombatPlanner.BehemothMeteorType);
+        planner.ObserveActor(barrier, KeyboundCombatPlanner.BehemothBarrierType);
         planner.ObserveTarget(normal);
         planner.ObserveTarget(reward);
         planner.ObserveTarget(missile);
         planner.ObserveTarget(cactuar);
         planner.ObserveTarget(shield);
+        planner.ObserveTarget(behemoth);
+        planner.ObserveTarget(meteor);
+        planner.ObserveTarget(barrier);
         DateTime now = DateTime.UtcNow;
         Assert(planner.CompareTargets(reward, 9, missile, 0, normal, now) < 0,
             "P2 reward target outranks missile and current normal target");
@@ -129,29 +178,55 @@ internal static class KeyboundProbeTests
             "P2 four-hit cast outranks reward target");
         Assert(planner.CompareTargets(shield, 9, cactuar, 0, normal, now) < 0,
             "shield is absolute highest priority");
+        Assert(planner.CompareTargets(barrier, 9, cactuar, 0, behemoth, now) < 0 &&
+            planner.CompareTargets(meteor, 9, behemoth, 0, behemoth, now) < 0,
+            "P2 Behemoth barrier and meteor preempt boss body");
 
         const uint storm = 0x43000001;
         const uint mine = 0x43000002;
+        const uint stormMissile = 0x43000003;
         planner.ObserveActor(storm, KeyboundCombatPlanner.StormDestroyerType);
         planner.ObserveActor(mine, KeyboundCombatPlanner.MineType);
+        planner.ObserveActor(stormMissile, KeyboundCombatPlanner.StormMissileType);
         planner.ObserveTarget(storm);
         planner.ObserveTarget(mine);
+        planner.ObserveTarget(stormMissile);
         Assert(planner.CombatStage == 3 &&
             planner.CompareTargets(mine, 1, storm, 0, storm, now) < 0,
             "P3 mine preempts focused boss");
+        Assert(planner.CompareTargets(stormMissile, 9, storm, 0, storm, now) < 0,
+            "P3 missile preempts focused boss");
+        planner.RecordCastStart(storm, KeyboundCombatPlanner.ThunderBombAction, 11.7, now);
+        Assert(planner.CompareTargets(storm, 9, mine, 0, mine, now) < 0,
+            "P3 thunder bomb four-hit cast preempts mine");
 
         const uint eye = 0x44000001;
         DateTime castStart = new DateTime(2026, 10, 29, 0, 0, 0, DateTimeKind.Utc);
         planner.RecordCastStart(eye, KeyboundCombatPlanner.CurseGazeAction, 4.7, castStart);
-        Assert(!planner.ShouldPause(castStart.AddSeconds(3.9)) &&
-            planner.ShouldPause(castStart.AddSeconds(4.2)) &&
+        Assert(!planner.ShouldPause(castStart.AddSeconds(1.4)) &&
+            planner.ShouldPause(castStart.AddSeconds(1.5)) &&
             planner.ShouldPause(castStart.AddSeconds(5.6)) &&
             !planner.ShouldPause(castStart.AddSeconds(5.8)),
-            "gaze pauses shortly before cast end through one second after");
+            "gaze pauses within 1.5 seconds of cast start through one second after end");
         planner.RecordCastStart(eye, KeyboundCombatPlanner.CurseGazeAction, 4.7, castStart);
         planner.RecordCastEnd(eye, KeyboundCombatPlanner.CurseGazeAction, true);
         Assert(!planner.ShouldPause(castStart.AddSeconds(4.2)),
             "interrupted stop cast clears pause window");
+
+        foreach (uint stopAction in new[] {
+            KeyboundCombatPlanner.CurseGazeAction,
+            KeyboundCombatPlanner.MotionDetectorScorpionAction,
+            KeyboundCombatPlanner.MotionDetectorStormAction })
+        {
+            Assert(KeyboundCombatPlanner.IsStopCastAction(stopAction),
+                "all P2/P3 stop casts use the fast ActorCast path: 0x" + stopAction.ToString("X"));
+            Assert(KeyboundCombatPlanner.ResolveCastStartTime(stopAction,
+                castStart.AddSeconds(-3), castStart) == castStart,
+                "stop cast timing ignores stale ACT event timestamp: 0x" + stopAction.ToString("X"));
+        }
+        Assert(KeyboundCombatPlanner.ResolveCastStartTime(
+            KeyboundCombatPlanner.ThunderBombAction, castStart.AddSeconds(-3), castStart) ==
+            castStart.AddSeconds(-3), "ordinary priority cast keeps event timestamp");
 
         planner.SetDirectorPhase(4);
         Assert(planner.PhaseOneKillCount == 0 && planner.TrackedTargetCount == 0 &&
@@ -201,9 +276,12 @@ internal static class KeyboundProbeTests
             settings.BlatantMode = false;
             settings.TargetOrder = "shortest";
             settings.CharacterDelayMs = 135;
+            settings.TypingSubmitMinimumMs = 2500;
+            settings.TypingSubmitBudgetMs = 2000;
             settings.Save(path);
             KeyboundActSettings loaded = KeyboundActSettings.Load(path);
-            Assert(loaded.TargetOrder == "shortest" && loaded.CharacterDelayMs == 135,
+            Assert(loaded.TargetOrder == "shortest" && loaded.CharacterDelayMs == 135 &&
+                loaded.TypingSubmitMinimumMs == 2500 && loaded.TypingSubmitBudgetMs == 2500,
                 "ACT cadence settings round trip");
         }
         finally

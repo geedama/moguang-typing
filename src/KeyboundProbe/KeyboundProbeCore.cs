@@ -18,21 +18,29 @@ namespace ActEnhanced.KeyboundProbe
         public const uint CactuarType = 0x4C85;
         public const uint ScorpionType = 0x4C89;
         public const uint MorbolType = 0x4C8A;
+        public const uint BehemothType = 0x4C8B;
         public const uint StormDestroyerType = 0x4C8C;
         public const uint MissileType = 0x4D71;
+        public const uint StormMissileType = 0x4D72;
         public const uint FlowerBudType = 0x4D73;
         public const uint GrownFlowerType = 0x4D74;
+        public const uint BehemothMeteorType = 0x4D75;
+        public const uint BehemothBarrierType = 0x4D70;
         public const uint MineType = 0x4DD3;
 
         public const uint CurseGazeAction = 0xC179;
         public const uint CactuarNeedleAction = 0xC174;
         public const uint SlimeBurstAction = 0xC18C;
         public const uint DestructionCannonAction = 0xC223;
+        public const uint ThunderBombAction = 0xC227;
         public const uint MotionDetectorScorpionAction = 0xC17C;
         public const uint MotionDetectorStormAction = 0xC226;
         public const uint ExplosionAction = 0xC22A;
+        public const uint BehemothMeteorExplosionAction = 0xC190;
 
-        private const int StopBeforeCastEndMs = 700;
+        // Stop no later than 1.5 seconds after the cast begins. ACT can deliver the
+        // line late, so timestamps that have already crossed this point pause at once.
+        private const int StopAfterCastStartMs = 1500;
         private const int ResumeAfterCastEndMs = 1000;
 
         private readonly Dictionary<uint, long> appearanceOrder =
@@ -58,6 +66,20 @@ namespace ActEnhanced.KeyboundProbe
         public int TrackedTargetCount { get { lock (sync) return appearanceOrder.Count; } }
         public bool IsPhaseOneComplete { get { lock (sync) return phaseOneKillCount >= PhaseOneKillGoal; } }
         public bool CanAttack { get { lock (sync) return directorPhase == 2 && combatStage != 0; } }
+
+        internal static bool CanUsePrompt(bool obstructed, bool visualInterferenceActive)
+        {
+            return !obstructed || visualInterferenceActive;
+        }
+
+        internal static DateTime ResolveCastStartTime(uint actionId, DateTime eventUtc,
+            DateTime observedUtc)
+        {
+            // FFXIV_ACT_Plugin log timestamps can trail the callback clock by several
+            // seconds. Using that stale timestamp makes stop casts pause immediately
+            // and resume before the mechanic has visibly completed.
+            return IsStopCastAction(actionId) ? observedUtc : eventUtc;
+        }
 
         public void SetDirectorPhase(uint value)
         {
@@ -198,10 +220,13 @@ namespace ActEnhanced.KeyboundProbe
                     StartUtc = utcTime,
                     EndUtc = utcTime.AddSeconds(castSeconds)
                 };
-                activeCasts[sourceId] = cast;
-                if (IsStopCast(actionId))
+                KeyboundActiveCast existing;
+                if (!activeCasts.TryGetValue(sourceId, out existing) ||
+                    existing.ActionId != actionId || cast.EndUtc > existing.EndUtc)
+                    activeCasts[sourceId] = cast;
+                if (IsStopCastAction(actionId))
                 {
-                    DateTime start = cast.EndUtc.AddMilliseconds(-StopBeforeCastEndMs);
+                    DateTime start = cast.StartUtc.AddMilliseconds(StopAfterCastStartMs);
                     DateTime until = cast.EndUtc.AddMilliseconds(ResumeAfterCastEndMs);
                     if (until > pauseUntilUtc)
                     {
@@ -253,9 +278,9 @@ namespace ActEnhanced.KeyboundProbe
                 if (combatStage == 1)
                     return "P1 先出现先攻击；击杀 " + phaseOneKillCount + "/" + PhaseOneKillGoal;
                 if (combatStage == 2)
-                    return "P2 机制优先：护盾 > 四次打断 > 奖励怪 > 自爆物/花苞 > 当前目标";
+                    return "P2 机制优先：护盾 > 四次打断 > 奖励怪 > 导弹/陨石/自爆物 > 当前目标";
                 if (combatStage == 3)
-                    return "P3 机制优先：护盾 > 破坏加农炮 > 地雷 > 暴风破坏者";
+                    return "P3 机制优先：护盾 > 四次攻击读条 > 导弹/地雷 > 暴风破坏者";
                 return "等待识别 P1/P2/P3";
             }
         }
@@ -268,14 +293,14 @@ namespace ActEnhanced.KeyboundProbe
             activeCasts.TryGetValue(entityId, out cast);
             uint actionId = cast != null && cast.EndUtc.AddSeconds(1) >= nowUtc ? cast.ActionId : 0;
 
-            if (bnpcId == ShieldType)
+            if (bnpcId == ShieldType || bnpcId == BehemothBarrierType)
                 return 0;
             if (actionId == CactuarNeedleAction || actionId == SlimeBurstAction ||
-                actionId == DestructionCannonAction)
+                actionId == DestructionCannonAction || actionId == ThunderBombAction)
                 return 5;
             if (combatStage == 3)
             {
-                if (bnpcId == MineType)
+                if (bnpcId == MineType || bnpcId == StormMissileType)
                     return 10;
                 if (bnpcId == StormDestroyerType)
                     return 100;
@@ -285,11 +310,13 @@ namespace ActEnhanced.KeyboundProbe
             {
                 if (bnpcId == RewardType)
                     return 10;
-                if (bnpcId == MissileType || bnpcId == MineType || actionId == ExplosionAction)
+                if (bnpcId == MissileType || bnpcId == MineType ||
+                    bnpcId == BehemothMeteorType || actionId == ExplosionAction ||
+                    actionId == BehemothMeteorExplosionAction)
                     return 20;
                 if (bnpcId == FlowerBudType || bnpcId == GrownFlowerType)
                     return 30;
-                if (bnpcId == ScorpionType || bnpcId == MorbolType)
+                if (bnpcId == ScorpionType || bnpcId == MorbolType || bnpcId == BehemothType)
                     return 100;
                 return 60;
             }
@@ -299,8 +326,10 @@ namespace ActEnhanced.KeyboundProbe
         private static bool IsPhaseTwoType(uint bnpcId)
         {
             return bnpcId == RewardType || bnpcId == EyeType || bnpcId == CactuarType ||
-                bnpcId == ScorpionType || bnpcId == MorbolType || bnpcId == MissileType ||
-                bnpcId == FlowerBudType || bnpcId == GrownFlowerType;
+                bnpcId == ScorpionType || bnpcId == MorbolType || bnpcId == BehemothType ||
+                bnpcId == MissileType || bnpcId == FlowerBudType ||
+                bnpcId == GrownFlowerType || bnpcId == BehemothMeteorType ||
+                bnpcId == BehemothBarrierType;
         }
 
         public static bool IsRelevantActorType(uint bnpcId)
@@ -310,7 +339,7 @@ namespace ActEnhanced.KeyboundProbe
                 bnpcId == MineType || bnpcId == ShieldType || bnpcId == 0x233C;
         }
 
-        private static bool IsStopCast(uint actionId)
+        internal static bool IsStopCastAction(uint actionId)
         {
             return actionId == CurseGazeAction || actionId == MotionDetectorScorpionAction ||
                 actionId == MotionDetectorStormAction;
@@ -395,6 +424,8 @@ namespace ActEnhanced.KeyboundProbe
     {
         public const int HeaderSize = 32;
         public const int OpcodeOffset = 18;
+        public const int ActorCastActionOffset = 32;
+        public const int ActorCastTimeOffset = 40;
 
         public static bool TryReadHeader(byte[] message, out PacketHeader header)
         {
@@ -409,6 +440,49 @@ namespace ActEnhanced.KeyboundProbe
                 Opcode = BitConverter.ToUInt16(message, OpcodeOffset)
             };
             return true;
+        }
+
+        public static ushort LoadOpcode(string path, string name)
+        {
+            if (String.IsNullOrWhiteSpace(path) || String.IsNullOrWhiteSpace(name) ||
+                !File.Exists(path))
+                return 0;
+            try
+            {
+                foreach (string raw in File.ReadLines(path))
+                {
+                    string line = raw.Trim();
+                    int separator = line.IndexOf('|');
+                    if (separator <= 0 || !String.Equals(line.Substring(0, separator).Trim(),
+                        name, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    ushort value;
+                    return UInt16.TryParse(line.Substring(separator + 1).Trim(),
+                        NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value) ? value : (ushort)0;
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        public static bool TryReadActorCast(byte[] message, ushort actorCastOpcode,
+            out uint actorId, out uint actionId, out double castSeconds)
+        {
+            actorId = 0;
+            actionId = 0;
+            castSeconds = 0;
+            PacketHeader header;
+            if (actorCastOpcode == 0 || message == null ||
+                message.Length < ActorCastTimeOffset + sizeof(float) ||
+                !TryReadHeader(message, out header) || header.Opcode != actorCastOpcode)
+                return false;
+            float seconds = BitConverter.ToSingle(message, ActorCastTimeOffset);
+            if (Single.IsNaN(seconds) || Single.IsInfinity(seconds) || seconds <= 0 || seconds > 120)
+                return false;
+            actorId = header.ActorId;
+            actionId = BitConverter.ToUInt16(message, ActorCastActionOffset);
+            castSeconds = seconds;
+            return actorId != 0 && actionId != 0;
         }
 
         public static uint Fingerprint(byte[] message)
