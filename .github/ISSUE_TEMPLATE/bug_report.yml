@@ -1,0 +1,47 @@
+name: 问题报告
+description: 报告安装、识别、输入、机制或悬浮窗问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: 请勿上传包含角色隐私的完整抓包或日志；只附问题时间附近的必要片段。
+  - type: input
+    id: version
+    attributes:
+      label: 魔光打字通版本
+      placeholder: 例如 0.12.0
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: FFXIV 与呆萌 ACT 版本
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 问题类型
+      options:
+        - 安装或加载
+        - 题目识别
+        - 自动输入或提交
+        - P1/P2/P3 机制处理
+        - ngld 悬浮窗
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤与实际结果
+      description: 请写明阶段、怪物/读条、发生时间和预期结果。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 必要日志片段
+      description: 可粘贴 KeyboundProbe.auto.log 中问题时间前后的片段，请先移除隐私信息。
+      render: text

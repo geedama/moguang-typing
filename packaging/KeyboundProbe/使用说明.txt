@@ -1,0 +1,18 @@
+魔光打字通 __VERSION__
+=====================
+
+安装：
+1. 完全关闭 ACT 和呆萌启动器。
+2. 解压整个 ZIP。
+3. 双击“安装到呆萌ACT.cmd”。
+4. 选择包含“Advanced Combat Tracker.exe”的呆萌 ACT 根目录。
+5. 启动 ACT，确认 KeyboundProbe.ActPlugin.dll 已加载。
+
+使用：
+1. 确认 ACT 的 FFXIV_ACT_Plugin 已连接。
+2. 进入 FFXIV 并保持游戏窗口在前台。
+3. 进入魔光键影；插件页应显示 KTGEWord 和正确中文题目。
+4. 在插件页或“魔光打字通”悬浮窗开启自动攻击。
+5. 需要停止时点击“立即停用”或关闭悬浮窗中的自动攻击。
+
+完整设置、机制范围和故障排查请阅读 README.md。

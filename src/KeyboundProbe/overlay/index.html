@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>魔光打字通</title>
+  <link rel="stylesheet" href="overlay.css">
+</head>
+<body>
+  <main id="hud" aria-live="polite">
+    <header class="topline">
+      <div class="identity">
+        <span id="health-dot" class="health-dot" aria-hidden="true"></span>
+        <h1>魔光打字通</h1>
+      </div>
+      <button id="automation-toggle" type="button" aria-pressed="false" disabled>
+        <span class="toggle-light" aria-hidden="true"></span>
+        <span id="toggle-label">自动攻击关闭</span>
+      </button>
+    </header>
+
+    <section class="target" aria-label="当前目标">
+      <div class="target-head">
+        <span id="attempt-state">等待题目</span>
+        <span id="entity-id">未选择怪物</span>
+      </div>
+      <div id="target-text" class="target-text">等待题目</div>
+      <div id="automation-status" class="automation-status">ACT 插件连接后可在此启停自动攻击</div>
+    </section>
+
+    <section class="telemetry" aria-label="调试信息">
+      <div class="datum">
+        <span>网络</span>
+        <strong id="network-state">离线</strong>
+      </div>
+      <div class="datum">
+        <span>可见题目</span>
+        <strong id="target-count">0</strong>
+      </div>
+      <div class="datum input-datum">
+        <span>KTGInput</span>
+        <strong id="input-state">不可见</strong>
+        <code id="input-text">—</code>
+      </div>
+      <div class="datum">
+        <span>输入预算</span>
+        <strong id="budget">1500 ms</strong>
+      </div>
+    </section>
+
+    <footer>
+      <div class="event-copy">
+        <span id="event-time">--:--:--</span>
+        <strong id="last-event">等待事件</strong>
+        <p id="event-detail">本地状态服务尚未连接</p>
+      </div>
+      <div class="run-meta">
+        <span id="score">分数：—</span>
+        <span id="phase">阶段：—</span>
+      </div>
+    </footer>
+  </main>
+  <script src="runtime.js"></script>
+  <script src="overlay.js"></script>
+</body>
+</html>
