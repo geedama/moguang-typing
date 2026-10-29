@@ -109,6 +109,30 @@ namespace ActEnhanced.KeyboundProbe
                 return true;
             }
 
+            // Type 22 is emitted when an action actually resolves. Only surface the
+            // stop mechanics here; parsing every combat action would flood the UI and
+            // diagnostic log. Multiple targets may repeat the same completion, and the
+            // planner safely extends the same post-mechanic guard window.
+            if (type == "22" && fields.Length >= 6)
+            {
+                uint sourceId;
+                uint actionId;
+                if (!TryHex(fields[2], out sourceId) || !TryHex(fields[4], out actionId) ||
+                    !KeyboundCombatPlanner.IsStopCastAction(actionId))
+                    return false;
+                result = new KeyboundCombatSignal
+                {
+                    Kind = KeyboundCombatSignalKind.CastEnded,
+                    UtcTime = utcTime,
+                    EntityId = sourceId,
+                    SourceId = sourceId,
+                    ActionId = actionId,
+                    ActionName = fields[5],
+                    Interrupted = false
+                };
+                return true;
+            }
+
             if ((type == "26" || type == "30") && fields.Length >= 9)
             {
                 uint statusId;

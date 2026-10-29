@@ -1554,10 +1554,15 @@ namespace ActEnhanced.KeyboundProbe
             }
             if (signal.Kind == KeyboundCombatSignalKind.CastEnded)
             {
-                combatPlanner.RecordCastEnd(signal.SourceId, signal.ActionId, signal.Interrupted);
+                DateTime observedUtc = DateTime.UtcNow;
+                combatPlanner.RecordCastEnd(signal.SourceId, signal.ActionId,
+                    signal.Interrupted, observedUtc);
                 WriteAutomationDiagnostic(signal.Interrupted ? "CAST_INTERRUPTED" : "CAST_END",
                     signal.SourceId, signal.ActionName,
-                    "action=0x" + signal.ActionId.ToString("X"));
+                    "action=0x" + signal.ActionId.ToString("X") +
+                    "; eventLagMs=" + Math.Max(0,
+                        (int)(observedUtc - signal.UtcTime).TotalMilliseconds) +
+                    "; resumeGuardMs=2000");
                 return;
             }
             if (signal.Kind == KeyboundCombatSignalKind.StatusAdded ||

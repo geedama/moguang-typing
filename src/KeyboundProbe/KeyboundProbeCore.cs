@@ -41,7 +41,7 @@ namespace ActEnhanced.KeyboundProbe
         // Stop no later than 1.5 seconds after the cast begins. ACT can deliver the
         // line late, so timestamps that have already crossed this point pause at once.
         private const int StopAfterCastStartMs = 1500;
-        private const int ResumeAfterCastEndMs = 1000;
+        private const int ResumeAfterCastEndMs = 2000;
 
         private readonly Dictionary<uint, long> appearanceOrder =
             new Dictionary<uint, long>();
@@ -240,7 +240,8 @@ namespace ActEnhanced.KeyboundProbe
             }
         }
 
-        public void RecordCastEnd(uint sourceId, uint actionId, bool interrupted)
+        public void RecordCastEnd(uint sourceId, uint actionId, bool interrupted,
+            DateTime observedUtc)
         {
             lock (sync)
             {
@@ -251,6 +252,13 @@ namespace ActEnhanced.KeyboundProbe
                 if (interrupted && pauseSourceId == sourceId &&
                     (actionId == 0 || pauseActionId == actionId))
                     ClearPauseUnsafe();
+                else if (!interrupted && pauseSourceId == sourceId &&
+                    (actionId == 0 || pauseActionId == actionId))
+                {
+                    DateTime confirmedUntil = observedUtc.AddMilliseconds(ResumeAfterCastEndMs);
+                    if (confirmedUntil > pauseUntilUtc)
+                        pauseUntilUtc = confirmedUntil;
+                }
             }
         }
 

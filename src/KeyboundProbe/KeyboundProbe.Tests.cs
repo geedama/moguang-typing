@@ -205,13 +205,21 @@ internal static class KeyboundProbeTests
         planner.RecordCastStart(eye, KeyboundCombatPlanner.CurseGazeAction, 4.7, castStart);
         Assert(!planner.ShouldPause(castStart.AddSeconds(1.4)) &&
             planner.ShouldPause(castStart.AddSeconds(1.5)) &&
-            planner.ShouldPause(castStart.AddSeconds(5.6)) &&
-            !planner.ShouldPause(castStart.AddSeconds(5.8)),
-            "gaze pauses within 1.5 seconds of cast start through one second after end");
+            planner.ShouldPause(castStart.AddSeconds(6.6)) &&
+            !planner.ShouldPause(castStart.AddSeconds(6.8)),
+            "gaze pauses within 1.5 seconds of cast start through two seconds after expected end");
         planner.RecordCastStart(eye, KeyboundCombatPlanner.CurseGazeAction, 4.7, castStart);
-        planner.RecordCastEnd(eye, KeyboundCombatPlanner.CurseGazeAction, true);
+        planner.RecordCastEnd(eye, KeyboundCombatPlanner.CurseGazeAction, true,
+            castStart.AddSeconds(4.2));
         Assert(!planner.ShouldPause(castStart.AddSeconds(4.2)),
             "interrupted stop cast clears pause window");
+
+        planner.RecordCastStart(eye, KeyboundCombatPlanner.CurseGazeAction, 4.7, castStart);
+        planner.RecordCastEnd(eye, KeyboundCombatPlanner.CurseGazeAction, false,
+            castStart.AddSeconds(5));
+        Assert(planner.ShouldPause(castStart.AddSeconds(6.9)) &&
+            !planner.ShouldPause(castStart.AddSeconds(7.1)),
+            "confirmed stop mechanic keeps input paused for two seconds after resolution");
 
         foreach (uint stopAction in new[] {
             KeyboundCombatPlanner.CurseGazeAction,
@@ -252,6 +260,11 @@ internal static class KeyboundProbeTests
             "23|2026-10-29T02:04:58.7600000+08:00|40005CDD|暴风破坏者|C223|破坏加农炮|Interrupted|hash",
             out signal) && signal.Kind == KeyboundCombatSignalKind.CastEnded && signal.Interrupted,
             "combat parser cast interruption");
+        Assert(parser.TryParse(
+            "22|2026-10-29T21:56:20.9570000+08:00|4000B58E|暴风破坏者|C226|运动体探知干扰器|1001|玩家|hash",
+            out signal) && signal.Kind == KeyboundCombatSignalKind.CastEnded &&
+            !signal.Interrupted && signal.ActionId == 0xC226,
+            "combat parser stop mechanic resolution");
         Assert(parser.TryParse(
             "26|2026-10-29T02:01:17.7680000+08:00|14E4|视觉妨碍|28.00|40005C98||1001CFAD|玩家|493|168335||hash",
             out signal) && signal.Kind == KeyboundCombatSignalKind.StatusAdded &&
