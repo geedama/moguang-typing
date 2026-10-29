@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputDirectory,
     [string]$LicensePath,
     [switch]$SkipBuild,
@@ -74,6 +74,11 @@ foreach ($name in @('index.html', 'overlay.css', 'overlay.js')) {
 foreach ($name in @('README.md', '使用说明.txt', '安装到呆萌ACT.cmd', '卸载.cmd',
         'Install-KeyboundProbe.ps1', 'Uninstall-KeyboundProbe.ps1')) {
     Copy-Item -LiteralPath (Join-Path $packaging $name) -Destination $stage
+}
+foreach ($name in @('Install-KeyboundProbe.ps1', 'Uninstall-KeyboundProbe.ps1')) {
+    $scriptPath = Join-Path $stage $name
+    $scriptText = [IO.File]::ReadAllText($scriptPath)
+    [IO.File]::WriteAllText($scriptPath, $scriptText, (New-Object Text.UTF8Encoding($true)))
 }
 Copy-Item -LiteralPath $versionPath -Destination $stage
 Copy-Item -LiteralPath $LicensePath -Destination (Join-Path $stage 'LICENSE')

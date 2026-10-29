@@ -1,8 +1,22 @@
-param(
+﻿param(
     [string]$ActRoot
 )
 
 $ErrorActionPreference = 'Stop'
+$errorLog = Join-Path ([IO.Path]::GetTempPath()) 'MoguangTyping-Uninstall-Error.log'
+
+trap {
+    $failure = $_
+    try {
+        $details = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')]`r`n$($failure | Out-String)"
+        [IO.File]::WriteAllText($errorLog, $details, (New-Object Text.UTF8Encoding($true)))
+    }
+    catch { }
+    Write-Host ''
+    Write-Host ("卸载失败：" + $failure.Exception.Message) -ForegroundColor Red
+    Write-Host ("错误日志：" + $errorLog) -ForegroundColor Yellow
+    exit 1
+}
 
 function Select-ActRoot([string]$InitialPath) {
     Add-Type -AssemblyName System.Windows.Forms

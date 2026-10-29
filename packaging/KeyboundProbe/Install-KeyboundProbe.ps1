@@ -1,8 +1,23 @@
-param(
+﻿param(
     [string]$ActRoot
 )
 
 $ErrorActionPreference = 'Stop'
+$packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$errorLog = Join-Path ([IO.Path]::GetTempPath()) 'MoguangTyping-Install-Error.log'
+
+trap {
+    $failure = $_
+    try {
+        $details = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')]`r`n$($failure | Out-String)"
+        [IO.File]::WriteAllText($errorLog, $details, (New-Object Text.UTF8Encoding($true)))
+    }
+    catch { }
+    Write-Host ''
+    Write-Host ("安装失败：" + $failure.Exception.Message) -ForegroundColor Red
+    Write-Host ("错误日志：" + $errorLog) -ForegroundColor Yellow
+    exit 1
+}
 
 function Select-ActRoot([string]$InitialPath) {
     Add-Type -AssemblyName System.Windows.Forms
@@ -141,7 +156,6 @@ function Register-Overlay([string]$ConfigPath, [string]$OverlayIndex) {
     return $true
 }
 
-$packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $payload = Join-Path $packageRoot 'Plugin'
 if (-not (Test-Path -LiteralPath (Join-Path $payload 'KeyboundProbe.ActPlugin.dll'))) {
     throw '安装包不完整：缺少 Plugin\KeyboundProbe.ActPlugin.dll。请重新解压完整 ZIP。'

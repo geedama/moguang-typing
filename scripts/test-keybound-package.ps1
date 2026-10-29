@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$PackageDirectory,
     [string]$TemplateActRoot
@@ -23,6 +23,29 @@ function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "Package integration test failed: $Message" }
 }
 
+foreach ($name in @('Install-KeyboundProbe.ps1', 'Uninstall-KeyboundProbe.ps1')) {
+    $scriptPath = Join-Path $PackageDirectory $name
+    $bytes = [IO.File]::ReadAllBytes($scriptPath)
+    Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and
+        $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) "$name is not UTF-8 BOM"
+
+    $windowsPowerShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $escapedPath = $scriptPath.Replace("'", "''")
+    $parseCommand = "`$tokens=`$null; `$errors=`$null; " +
+        "[System.Management.Automation.Language.Parser]::ParseFile('$escapedPath', " +
+        "[ref]`$tokens, [ref]`$errors) > `$null; " +
+        "if (`$errors.Count -ne 0) { `$errors | ForEach-Object { Write-Error `$_.Message }; exit 1 }"
+    & $windowsPowerShell -NoProfile -NonInteractive -Command $parseCommand
+    Assert-True ($LASTEXITCODE -eq 0) "$name does not parse in Windows PowerShell 5.1"
+}
+
+function Invoke-PackageScript([string]$Name, [string]$ActRoot) {
+    $scriptPath = Join-Path $PackageDirectory $Name
+    & $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+        -File $scriptPath -ActRoot $ActRoot
+    Assert-True ($LASTEXITCODE -eq 0) "$Name failed in Windows PowerShell 5.1"
+}
+
 try {
     New-Item -ItemType Directory -Path (Join-Path $fixture 'DLibs'),
         (Join-Path $fixture 'Config') -Force | Out-Null
@@ -33,7 +56,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $TemplateActRoot 'Config\RainbowMage.OverlayPlugin.config.json') `
         -Destination (Join-Path $fixture 'Config')
 
-    & (Join-Path $PackageDirectory 'Install-KeyboundProbe.ps1') -ActRoot $fixture
+    Invoke-PackageScript 'Install-KeyboundProbe.ps1' $fixture
     $plugin = Join-Path $fixture 'Plugins\KeyboundProbe\KeyboundProbe.ActPlugin.dll'
     $settings = Join-Path $fixture 'Plugins\KeyboundProbe\KeyboundProbe.settings.ini'
     Assert-True (Test-Path -LiteralPath $plugin) 'plugin DLL was not copied'
@@ -57,11 +80,11 @@ try {
         'Plugins\KeyboundProbe\overlay\index.html')).AbsoluteUri)) 'ngld overlay URL is incorrect'
 
     [IO.File]::AppendAllText($settings, "`r`n# preserve-sentinel", (New-Object Text.UTF8Encoding($false)))
-    & (Join-Path $PackageDirectory 'Install-KeyboundProbe.ps1') -ActRoot $fixture
+    Invoke-PackageScript 'Install-KeyboundProbe.ps1' $fixture
     Assert-True ([IO.File]::ReadAllText($settings).Contains('# preserve-sentinel')) `
         'upgrade overwrote existing user settings'
 
-    & (Join-Path $PackageDirectory 'Uninstall-KeyboundProbe.ps1') -ActRoot $fixture
+    Invoke-PackageScript 'Uninstall-KeyboundProbe.ps1' $fixture
     Assert-True (-not (Test-Path -LiteralPath $plugin)) 'uninstall left the plugin DLL behind'
     Assert-True (Test-Path -LiteralPath $settings) 'uninstall removed user settings'
     $actDocument.Load((Join-Path $fixture 'Config\Advanced Combat Tracker.config.xml'))
