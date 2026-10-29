@@ -79,4 +79,4 @@
 
 ## 许可证
 
-本项目源码公开，允许自由修改与免费分发，禁止将插件本体付费倒卖。完整条款见 [LICENSE](LICENSE)，详细说明见 [许可证 FAQ](docs/LICENSE-OPTIONS.md)。
+本项目源码公开，允许免费下载、使用、阅读和个人修改；未经授权，不得重新打包、公开分发或商业倒卖。详见 [LICENSE](LICENSE) 和 [许可证 FAQ](docs/LICENSE-OPTIONS.md)。

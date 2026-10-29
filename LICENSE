@@ -1,123 +1,20 @@
-魔光打字通社区许可证 1.0
-Moguang Typing Community License 1.0
+魔光打字通使用授权声明 1.0
 
-Copyright (c) 2026 geedama
+Copyright (c) 2026 geedama. 保留所有权利。
 
-1. Definitions
+本项目公开源代码。版权人允许任何个人在非商业范围内：
 
-“Software” means the source code, object code, documentation, assets, and other
-materials distributed with this license.
+1. 免费下载、安装和使用本软件；
+2. 查看和研究本软件的源代码；
+3. 为个人学习、研究或自用而复制、修改源代码。
 
-“Modified Version” means any work derived from or based on the Software.
+除非法律另有规定或事先取得版权人的书面许可，不得：
 
-“Standalone Plugin Distribution” means a distribution in which the Software or
-a Modified Version remains identifiable and usable primarily as an FFXIV ACT
-plugin, whether distributed alone or bundled with other files.
+1. 向第三方公开发布、分发、镜像、转载、重新打包或提供本软件、源代码或修改版本；
+2. 销售、出租、收费授权本软件，设置付费下载、订阅或激活限制，或以其他方式商业化利用本软件本体或修改版本；
+3. 删除、遮蔽或篡改本声明及版权信息；
+4. 使用作者或项目名称暗示未经授权的认可、合作或背书。
 
-“Integrated Product” means an independently developed product that contains the
-Software or a Modified Version but provides substantial functionality separate
-from the plugin. Merely renaming, rebranding, repackaging, bundling, or making
-minor changes does not create an Integrated Product.
+GitHub 平台依其服务条款提供的查看和 Fork 功能不代表版权人授予公开发布、分发或商业使用权。
 
-“Plugin Access Fee” means any mandatory payment, subscription, license fee,
-activation fee, purchase, paid membership, credit, token, donation, or other
-consideration required to download, install, activate, update, or use the
-Software or a Modified Version as a plugin.
-
-2. Copyright License
-
-Subject to this license, each recipient is granted a worldwide, royalty-free,
-non-exclusive, non-transferable license to:
-
-a. use, reproduce, study, and modify the Software;
-b. create Modified Versions;
-c. distribute the Software or Modified Versions as a Standalone Plugin
-   Distribution free of charge;
-d. include the Software or Modified Versions in an Integrated Product,
-   including a commercial or proprietary Integrated Product;
-e. solicit and accept voluntary donations or sponsorships; and
-f. charge for installation, customization, integration, training, maintenance,
-   or technical support services.
-
-No source-code disclosure obligation is imposed on code that is independent of
-the Software. This license does not require a distributor of a Modified Version
-to publish its source code.
-
-3. Conditions
-
-Every copy or substantial portion of the Software, including every Modified
-Version, must:
-
-a. retain the above copyright notice and this complete license text;
-b. identify material modifications and their author or distributor;
-c. state that it is modified and is not an official release when applicable;
-   and
-d. when distributed as a Standalone Plugin Distribution, be made available
-   without a Plugin Access Fee.
-
-A person charging for services under Section 2(f) must clearly separate the
-service fee from the plugin and must either provide the plugin itself free of
-charge or provide a no-charge download location. Payment for services must not
-be required to receive or continue using the plugin.
-
-4. Prohibited Conduct
-
-You may not:
-
-a. sell, license for a fee, rent, or otherwise monetize a Standalone Plugin
-   Distribution;
-b. impose a Plugin Access Fee or place plugin download, installation,
-   activation, updates, or use behind a paywall;
-c. evade this license by renaming, rebranding, repackaging, bundling, or making
-   only minor changes to the Software;
-d. remove, obscure, or misrepresent copyright, attribution, modification, or
-   license notices;
-e. claim that a Modified Version is an official release or is endorsed by the
-   copyright holder without written permission; or
-f. require a donation or sponsorship as a condition of access.
-
-5. Integrated Products
-
-An Integrated Product may be sold, subscribed to, or otherwise commercially
-distributed. The independent portions of an Integrated Product may be licensed
-under different terms. However, the commercial transaction must be for the
-Integrated Product's substantial independent functionality and must not be a
-pretext for charging for a Standalone Plugin Distribution.
-
-The copyright and license notices required by Section 3 must remain accessible
-in the Integrated Product's documentation, notices, about screen, or source
-distribution, as appropriate.
-
-6. Third-Party Components and Trademarks
-
-This license applies only to material for which the stated copyright holder has
-authority to grant rights. Third-party components remain subject to their own
-licenses. No trademark rights or rights to the names, logos, or branding of the
-copyright holder are granted except as necessary for truthful attribution.
-
-7. Termination and Cure
-
-Your rights under this license terminate automatically if you materially breach
-it. Rights are reinstated automatically if you cure the breach within 30 days
-after you discover it or receive notice of it. Repeated or intentional breach
-may be cured only with the copyright holder's written permission.
-
-8. Disclaimer and Limitation of Liability
-
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
-PURPOSE, TITLE, AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY LAW,
-THE COPYRIGHT HOLDER AND CONTRIBUTORS ARE NOT LIABLE FOR ANY CLAIM, DAMAGES, OR
-OTHER LIABILITY ARISING FROM OR RELATED TO THE SOFTWARE OR ITS USE.
-
-9. Additional Permission
-
-The copyright holder may grant additional permission in writing. Additional
-permission applies only to the recipient and scope stated in that writing and
-does not alter this license for other recipients.
-
-10. License Character
-
-This is a custom source-available license. It has not been approved by the Open
-Source Initiative and must not be represented as an OSI-approved open-source
-license.
+本软件按“现状”提供，不附带任何明示或默示保证。在法律允许的最大范围内，版权人不对使用本软件造成的任何损失承担责任。
