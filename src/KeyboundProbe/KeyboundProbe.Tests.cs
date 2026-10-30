@@ -22,6 +22,7 @@ internal static class KeyboundProbeTests
         TestActSettings();
         TestDalamudLauncherGuards();
         TestGameInputGuards();
+        TestPhysicalPinyinSchedule();
         TestOverlayServer();
         Assert(GameInputSender.DirectTypingToSubmitMinimumMs == 1500 &&
             GameInputSender.DirectTypingToSubmitBudgetMs == 4000,
@@ -35,6 +36,18 @@ internal static class KeyboundProbeTests
         }
         Console.WriteLine("PASS: KeyboundProbe core tests");
     }
+
+    private static void TestPhysicalPinyinSchedule()
+    {
+        for (int seed = 0; seed < 50; seed++)
+        {
+            int interval = PhysicalPinyinSchedule.NextIntervalMilliseconds(new Random(seed));
+            Assert(interval >= PhysicalPinyinSchedule.MinimumIntervalMilliseconds &&
+                interval <= PhysicalPinyinSchedule.MaximumIntervalMilliseconds,
+                "physical pinyin interval remains within 45-60 seconds");
+        }
+    }
+
 
     private static void TestActorCastPacket()
     {
@@ -276,26 +289,84 @@ internal static class KeyboundProbeTests
     private static void TestActSettings()
     {
         var settings = new KeyboundActSettings();
-        int normal = settings.NextEquivalentTypingDelay("第捌区车站", new Random(7));
-        Assert(normal >= 600 + 5 * 72 + 200, "humanized cadence has configured lower bound");
-        settings.BlatantMode = true;
-        Assert(settings.NextEquivalentTypingDelay("第捌区车站", new Random(7)) == 0,
-            "blatant cadence has no delay");
+        KeyboundTimingProfile humanProfile = settings.GetTimingProfile("一二三四五六");
+        Assert(humanProfile.ReactionDelayMs == 150 && humanProfile.CharacterDelayMs == 70 &&
+            humanProfile.SubmitDelayMs == 150 && humanProfile.TotalMinimumMs == 1000 &&
+            humanProfile.TotalMaximumMs == 3000 && humanProfile.JitterPercent == 20,
+            "human preset values");
+        Assert(settings.GetTimingProfile("一二三四五六七").TotalMinimumMs == 2000,
+            "human preset switches minimum after six characters");
+        KeyboundTimingPlan normal = settings.CreateTimingPlan("第捌区车站", new Random(7));
+        Assert(normal.Mode == KeyboundActSettings.HumanMode &&
+            normal.PlannedTotalMs >= normal.TotalMinimumMs &&
+            normal.PlannedTotalMs <= normal.TotalMaximumMs && normal.CharacterDelaysMs.Length == 5,
+            "human preset uses bounded per-character cadence");
+        KeyboundTimingPlan longHuman = settings.CreateTimingPlan("超过六个字的长题目", new Random(7));
+        Assert(longHuman.TotalMinimumMs >= 1600 && longHuman.TotalMinimumMs <= 2400 &&
+            longHuman.PlannedTotalMs >= longHuman.TotalMinimumMs &&
+            longHuman.PlannedTotalMs <= longHuman.TotalMaximumMs,
+            "human long prompt raises and jitters total minimum");
+        settings.TimingMode = KeyboundActSettings.WarriorMode;
+        KeyboundTimingProfile warriorProfile = settings.GetTimingProfile("任意题目");
+        Assert(warriorProfile.ReactionDelayMs == 50 && warriorProfile.CharacterDelayMs == 30 &&
+            warriorProfile.SubmitDelayMs == 50 && warriorProfile.TotalMinimumMs == 500 &&
+            warriorProfile.TotalMaximumMs == 500 && warriorProfile.JitterPercent == 0,
+            "warrior preset values");
+        KeyboundTimingPlan warrior = settings.CreateTimingPlan("第捌区车站", new Random(7));
+        Assert(warrior.PlannedTotalMs == 500 && warrior.TotalMinimumMs == 500 &&
+            warrior.TotalMaximumMs == 500, "warrior preset has fixed 500 ms total");
+
+        var conflicting = new KeyboundActSettings
+        {
+            TimingMode = KeyboundActSettings.CustomMode,
+            CustomReactionDelayMs = 100,
+            CustomCharacterDelayMs = 100,
+            CustomSubmitDelayMs = 100,
+            CustomTotalMinimumMs = 3000,
+            CustomTotalMaximumMs = 3100,
+            CustomJitterPercent = 80
+        };
+        for (int seed = 0; seed < 100; seed++)
+        {
+            KeyboundTimingPlan jittered = conflicting.CreateTimingPlan("抖动测试", new Random(seed));
+            Assert(jittered.TotalMinimumMs <= jittered.TotalMaximumMs &&
+                jittered.PlannedTotalMs >= jittered.TotalMinimumMs &&
+                jittered.PlannedTotalMs <= jittered.TotalMaximumMs,
+                "jittered total bounds never conflict");
+        }
 
         string directory = Path.Combine(Path.GetTempPath(), "KeyboundActSettings-" + Guid.NewGuid().ToString("N"));
         string path = Path.Combine(directory, "settings.ini");
         try
         {
-            settings.BlatantMode = false;
-            settings.TargetOrder = "shortest";
-            settings.CharacterDelayMs = 135;
-            settings.TypingSubmitMinimumMs = 2500;
-            settings.TypingSubmitBudgetMs = 2000;
+            settings.TimingMode = KeyboundActSettings.CustomMode;
+            settings.CustomReactionDelayMs = 240;
+            settings.CustomCharacterDelayMs = 135;
+            settings.CustomSubmitDelayMs = 180;
+            settings.CustomTotalMinimumMs = 2500;
+            settings.CustomTotalMaximumMs = 2000;
+            settings.CustomJitterPercent = 12;
             settings.Save(path);
             KeyboundActSettings loaded = KeyboundActSettings.Load(path);
-            Assert(loaded.TargetOrder == "shortest" && loaded.CharacterDelayMs == 135 &&
-                loaded.TypingSubmitMinimumMs == 2500 && loaded.TypingSubmitBudgetMs == 2500,
+            Assert(loaded.TimingMode == KeyboundActSettings.CustomMode &&
+                loaded.CustomReactionDelayMs == 240 && loaded.CustomCharacterDelayMs == 135 &&
+                loaded.CustomSubmitDelayMs == 180 && loaded.CustomTotalMinimumMs == 2500 &&
+                loaded.CustomTotalMaximumMs == 2500 && loaded.CustomJitterPercent == 12,
                 "ACT cadence settings round trip");
+
+            File.WriteAllLines(path, new[] {
+                "Humanize=False", "BlatantMode=False", "StartDelayMinMs=100",
+                "StartDelayMaxMs=200", "CharacterDelayMs=45", "JitterPercent=15",
+                "SubmitDelayMinMs=120", "SubmitDelayMaxMs=180",
+                "TypingSubmitMinimumMs=900", "TypingSubmitBudgetMs=2200",
+                "TargetOrder=longest"
+            });
+            loaded = KeyboundActSettings.Load(path);
+            Assert(loaded.TimingMode == KeyboundActSettings.CustomMode &&
+                loaded.CustomReactionDelayMs == 150 && loaded.CustomCharacterDelayMs == 45 &&
+                loaded.CustomSubmitDelayMs == 150 && loaded.CustomTotalMinimumMs == 900 &&
+                loaded.CustomTotalMaximumMs == 2200 && loaded.CustomJitterPercent == 15,
+                "legacy cadence settings migrate to custom profile");
         }
         finally
         {
@@ -426,6 +497,12 @@ internal static class KeyboundProbeTests
             Assert(value.WordId == 0x56, "prompt word id");
             Assert(value.Word != null && value.Word.InputText == "BuHuiQuFuYuXiePo", "prompt word lookup");
             Assert(value.Word != null && value.Word.InputKeys == "bhqfyxp", "prompt initial keys");
+            KeyboundWord reverse = table.FindByDisplayText("不会屈服于胁迫！");
+            Assert(reverse != null && reverse.InputText == "BuHuiQuFuYuXiePo",
+                "display text resolves full pinyin despite optional punctuation");
+            KeyboundWord randomWrong = table.GetRandomDifferent("不会屈服于胁迫", new Random(1));
+            Assert(randomWrong == null,
+                "single-entry word table does not reuse the current prompt as a wrong answer");
             Assert(decoder.TryDecode(0x33,
                 "8003DEA9|10000016|400021DF|BFC|00|00", out value) &&
                 value.Kind == KeyboundEventKind.InputSuccess, "success decodes");

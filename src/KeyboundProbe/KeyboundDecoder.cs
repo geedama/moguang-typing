@@ -16,6 +16,9 @@ namespace ActEnhanced.KeyboundProbe
     public sealed class KeyboundWordTable
     {
         private readonly Dictionary<uint, KeyboundWord> words = new Dictionary<uint, KeyboundWord>();
+        private readonly Dictionary<string, KeyboundWord> wordsByDisplayText =
+            new Dictionary<string, KeyboundWord>(StringComparer.Ordinal);
+        private readonly List<KeyboundWord> allWords = new List<KeyboundWord>();
 
         public int Count { get { return words.Count; } }
 
@@ -34,7 +37,7 @@ namespace ActEnhanced.KeyboundProbe
                 if (fields.Length < 3 || !UInt32.TryParse(fields[0], NumberStyles.Integer,
                     CultureInfo.InvariantCulture, out id))
                     continue;
-                table.words[id] = new KeyboundWord
+                var word = new KeyboundWord
                 {
                     Id = id,
                     DisplayText = fields[1],
@@ -43,6 +46,11 @@ namespace ActEnhanced.KeyboundProbe
                         ? fields[3].Trim().ToLowerInvariant()
                         : DeriveInitials(fields[2])
                 };
+                table.words[id] = word;
+                table.allWords.Add(word);
+                string displayKey = NormalizeDisplayText(word.DisplayText);
+                if (displayKey.Length != 0 && !table.wordsByDisplayText.ContainsKey(displayKey))
+                    table.wordsByDisplayText[displayKey] = word;
             }
             return table;
         }
@@ -51,6 +59,38 @@ namespace ActEnhanced.KeyboundProbe
         {
             KeyboundWord word;
             return words.TryGetValue(id, out word) ? word : null;
+        }
+
+        public KeyboundWord FindByDisplayText(string displayText)
+        {
+            KeyboundWord word;
+            string key = NormalizeDisplayText(displayText);
+            return key.Length != 0 && wordsByDisplayText.TryGetValue(key, out word) ? word : null;
+        }
+
+        public KeyboundWord GetRandomDifferent(string excludedDisplayText, Random random)
+        {
+            if (random == null) throw new ArgumentNullException("random");
+            if (allWords.Count == 0) return null;
+            string excluded = NormalizeDisplayText(excludedDisplayText);
+            int start = random.Next(0, allWords.Count);
+            for (int offset = 0; offset < allWords.Count; offset++)
+            {
+                KeyboundWord candidate = allWords[(start + offset) % allWords.Count];
+                if (!String.Equals(NormalizeDisplayText(candidate.DisplayText), excluded,
+                    StringComparison.Ordinal))
+                    return candidate;
+            }
+            return null;
+        }
+
+        private static string NormalizeDisplayText(string value)
+        {
+            var result = new System.Text.StringBuilder();
+            foreach (char character in value ?? String.Empty)
+                if (character >= '\u4e00' && character <= '\u9fff')
+                    result.Append(character);
+            return result.ToString();
         }
 
         private static string DeriveInitials(string pinyin)

@@ -53,17 +53,14 @@ namespace ActEnhanced.KeyboundProbe
         private CheckBox autoInputEnabled;
         private KeyboundActSettings automationSettings;
         private string automationSettingsPath;
-        private CheckBox autoHumanize;
-        private CheckBox autoBlatantMode;
-        private NumericUpDown autoStartDelayMin;
-        private NumericUpDown autoStartDelayMax;
+        private ComboBox autoTimingMode;
+        private NumericUpDown autoReactionDelay;
         private NumericUpDown autoCharacterDelay;
         private NumericUpDown autoJitterPercent;
-        private NumericUpDown autoSubmitDelayMin;
-        private NumericUpDown autoSubmitDelayMax;
-        private NumericUpDown autoTypingSubmitMinimum;
-        private NumericUpDown autoTypingSubmitBudget;
-        private ComboBox autoTargetOrder;
+        private NumericUpDown autoSubmitDelay;
+        private NumericUpDown autoTotalMinimum;
+        private NumericUpDown autoTotalMaximum;
+        private bool updatingTimingControls;
         private Label autoInputStatus;
 #if LEGACY_DALAMUD_BRIDGE
         private int autoInputGeneration;
@@ -95,11 +92,8 @@ namespace ActEnhanced.KeyboundProbe
         private bool directMemoryAcknowledgementMode;
         private DateTime directConfirmationDeadlineUtc;
         private DateTime directRetryAfterUtc;
+        private DateTime nextPhysicalPinyinUtc = DateTime.MaxValue;
         private bool keyboundAddonPresent;
-        private int activityPulseGeneration;
-        private long activityPulseSequence;
-        private bool activityPulseActive;
-        private DateTime nextActivityPulseUtc = DateTime.MaxValue;
         private string automationDiagnosticPath;
         private readonly object automationDiagnosticLock = new object();
         private string lastMemoryDiagnosticStatus;
@@ -173,11 +167,9 @@ namespace ActEnhanced.KeyboundProbe
             autoInputEnabled.CheckedChanged += delegate
             {
                 System.Threading.Interlocked.Increment(ref directInputGeneration);
-                System.Threading.Interlocked.Increment(ref activityPulseGeneration);
-                activityPulseActive = false;
                 ResetDirectAutomation(!autoInputEnabled.Checked);
-                nextActivityPulseUtc = autoInputEnabled.Checked
-                    ? DateTime.UtcNow.AddMilliseconds(NextActivityPulseDelay(true))
+                nextPhysicalPinyinUtc = autoInputEnabled.Checked
+                    ? DateTime.UtcNow.AddMilliseconds(NextPhysicalPinyinInterval())
                     : DateTime.MaxValue;
                 autoInputStatus.Text = autoInputEnabled.Checked
                     ? "自动输入：已启用；请保持 FF14 在前台"
@@ -193,59 +185,69 @@ namespace ActEnhanced.KeyboundProbe
             });
             root.Controls.Add(autoControls);
 
-            var rhythmControls = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new System.Drawing.Size(780, 0) };
-            autoHumanize = new CheckBox { AutoSize = true, Text = "拟人化", Checked = automationSettings.Humanize };
-            autoBlatantMode = new CheckBox { AutoSize = true, Text = "演都不演", Checked = automationSettings.BlatantMode };
-            rhythmControls.Controls.Add(autoHumanize);
-            rhythmControls.Controls.Add(autoBlatantMode);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "反应" });
-            autoStartDelayMin = AddNumeric(rhythmControls, 0, 5000, automationSettings.StartDelayMinMs, 70);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "–" });
-            autoStartDelayMax = AddNumeric(rhythmControls, 0, 5000, automationSettings.StartDelayMaxMs, 70);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms；每字" });
-            autoCharacterDelay = AddNumeric(rhythmControls, 0, 500, automationSettings.CharacterDelayMs, 60);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms；抖动" });
-            autoJitterPercent = AddNumeric(rhythmControls, 0, 80, automationSettings.JitterPercent, 55);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "%；提交" });
-            autoSubmitDelayMin = AddNumeric(rhythmControls, 0, 2000, automationSettings.SubmitDelayMinMs, 65);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "–" });
-            autoSubmitDelayMax = AddNumeric(rhythmControls, 0, 2000, automationSettings.SubmitDelayMaxMs, 65);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms；输入→回车最短" });
-            autoTypingSubmitMinimum = AddNumeric(rhythmControls, 0, 10000,
-                automationSettings.TypingSubmitMinimumMs, 70);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms；最长预算" });
-            autoTypingSubmitBudget = AddNumeric(rhythmControls, 250, 10000,
-                automationSettings.TypingSubmitBudgetMs, 70);
-            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms" });
-            root.Controls.Add(rhythmControls);
+            var modeControls = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+            modeControls.Controls.Add(new Label { AutoSize = true, Text = "攻击参数" });
+            autoTimingMode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 130 };
+            autoTimingMode.Items.AddRange(new object[] { "拟人", "光之战士", "自定义" });
+            autoTimingMode.SelectedIndex = TimingModeIndex(automationSettings.TimingMode);
+            modeControls.Controls.Add(autoTimingMode);
+            modeControls.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Text = "拟人和光之战士使用固定参数；选择自定义后可编辑下方数值。"
+            });
+            root.Controls.Add(modeControls);
 
-            var orderControls = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
-            orderControls.Controls.Add(new Label { AutoSize = true, Text = "目标顺序" });
-            autoTargetOrder = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 180 };
-            autoTargetOrder.Items.AddRange(new object[] { "槽位近→远（近似距离）", "槽位远→近", "短词优先", "长词优先" });
-            autoTargetOrder.SelectedIndex = TargetOrderIndex(automationSettings.TargetOrder);
-            orderControls.Controls.Add(autoTargetOrder);
-            root.Controls.Add(orderControls);
+            var rhythmControls = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                WrapContents = true,
+                MaximumSize = new System.Drawing.Size(780, 0)
+            };
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "反应" });
+            autoReactionDelay = AddNumeric(rhythmControls, 0, 5000, 0, 65);
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms   每字" });
+            autoCharacterDelay = AddNumeric(rhythmControls, 0, 1000, 0, 65);
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms   提交" });
+            autoSubmitDelay = AddNumeric(rhythmControls, 0, 5000, 0, 65);
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms   总时长" });
+            autoTotalMinimum = AddNumeric(rhythmControls, 0, 10000, 0, 70);
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "–" });
+            autoTotalMaximum = AddNumeric(rhythmControls, 100, 10000, 100, 70);
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "ms   抖动" });
+            autoJitterPercent = AddNumeric(rhythmControls, 0, 80, 0, 55);
+            rhythmControls.Controls.Add(new Label { AutoSize = true, Text = "%" });
+            root.Controls.Add(rhythmControls);
+            root.Controls.Add(new Label
+            {
+                AutoSize = true,
+                MaximumSize = new System.Drawing.Size(760, 0),
+                Text = "总时长从选定小怪开始计算。未达到下限时会在提交前补足；预计超过上限时会压缩等待。拟人模式下，7 字及以上题目的下限自动提高到 2000 ms。"
+            });
 
             EventHandler saveRhythm = delegate { ReadAndSaveAutomationSettings(); };
-            autoHumanize.CheckedChanged += saveRhythm;
-            autoBlatantMode.CheckedChanged += saveRhythm;
-            autoStartDelayMin.ValueChanged += saveRhythm;
-            autoStartDelayMax.ValueChanged += saveRhythm;
+            autoTimingMode.SelectedIndexChanged += delegate
+            {
+                if (updatingTimingControls) return;
+                automationSettings.TimingMode = TimingModeName(autoTimingMode.SelectedIndex);
+                automationSettings.Normalize();
+                ApplyTimingControls();
+                SaveAutomationSettings();
+            };
+            autoReactionDelay.ValueChanged += saveRhythm;
             autoCharacterDelay.ValueChanged += saveRhythm;
             autoJitterPercent.ValueChanged += saveRhythm;
-            autoSubmitDelayMin.ValueChanged += saveRhythm;
-            autoSubmitDelayMax.ValueChanged += saveRhythm;
-            autoTypingSubmitMinimum.ValueChanged += saveRhythm;
-            autoTypingSubmitBudget.ValueChanged += saveRhythm;
-            autoTargetOrder.SelectedIndexChanged += saveRhythm;
+            autoSubmitDelay.ValueChanged += saveRhythm;
+            autoTotalMinimum.ValueChanged += saveRhythm;
+            autoTotalMaximum.ValueChanged += saveRhythm;
+            ApplyTimingControls();
             SaveAutomationSettings();
             autoInputStatus = AddLabel(root, "自动输入：已停用");
             root.Controls.Add(new Label
             {
                 AutoSize = true,
                 MaximumSize = new System.Drawing.Size(760, 0),
-                Text = "题目来自 ACT 直读 KTGEWord；通过 FF14 窗口消息逐字输入并逐字校验 KTGInput 回显，一次锁定一只怪物。输入到回车的最短时间和最长预算可在上方调整；输入框清空或同实体题目切换后继续，ACT 成功/死亡事件用于延迟佐证。KTGInput 不可读时禁止盲打。"
+                Text = "题目来自 ACT 直读 KTGEWord；通过 FF14 窗口消息逐字输入并逐字校验 KTGInput 回显，一次锁定一只怪物。输入框清空或同实体题目切换后继续，ACT 成功/死亡事件用于延迟佐证。KTGInput 不可读时禁止盲打。"
             });
 
             root.Controls.Add(new Label { AutoSize = true, Text = "当前题目" });
@@ -367,25 +369,49 @@ namespace ActEnhanced.KeyboundProbe
 
         private void ReadAndSaveAutomationSettings()
         {
-            if (automationSettings == null || autoHumanize == null || autoTargetOrder == null)
+            if (automationSettings == null || autoTimingMode == null || updatingTimingControls ||
+                automationSettings.TimingMode != KeyboundActSettings.CustomMode)
                 return;
-            automationSettings.Humanize = autoHumanize.Checked;
-            automationSettings.BlatantMode = autoBlatantMode.Checked;
-            automationSettings.StartDelayMinMs = Decimal.ToInt32(autoStartDelayMin.Value);
-            automationSettings.StartDelayMaxMs = Decimal.ToInt32(autoStartDelayMax.Value);
-            automationSettings.CharacterDelayMs = Decimal.ToInt32(autoCharacterDelay.Value);
-            automationSettings.JitterPercent = Decimal.ToInt32(autoJitterPercent.Value);
-            automationSettings.SubmitDelayMinMs = Decimal.ToInt32(autoSubmitDelayMin.Value);
-            automationSettings.SubmitDelayMaxMs = Decimal.ToInt32(autoSubmitDelayMax.Value);
-            automationSettings.TypingSubmitMinimumMs = Decimal.ToInt32(autoTypingSubmitMinimum.Value);
-            automationSettings.TypingSubmitBudgetMs = Decimal.ToInt32(autoTypingSubmitBudget.Value);
-            automationSettings.TargetOrder = TargetOrderName(autoTargetOrder.SelectedIndex);
+            automationSettings.CustomReactionDelayMs = Decimal.ToInt32(autoReactionDelay.Value);
+            automationSettings.CustomCharacterDelayMs = Decimal.ToInt32(autoCharacterDelay.Value);
+            automationSettings.CustomSubmitDelayMs = Decimal.ToInt32(autoSubmitDelay.Value);
+            automationSettings.CustomTotalMinimumMs = Decimal.ToInt32(autoTotalMinimum.Value);
+            automationSettings.CustomTotalMaximumMs = Decimal.ToInt32(autoTotalMaximum.Value);
+            automationSettings.CustomJitterPercent = Decimal.ToInt32(autoJitterPercent.Value);
             automationSettings.Normalize();
             SaveAutomationSettings();
-            if (autoTypingSubmitMinimum.Value != automationSettings.TypingSubmitMinimumMs)
-                autoTypingSubmitMinimum.Value = automationSettings.TypingSubmitMinimumMs;
-            if (autoTypingSubmitBudget.Value != automationSettings.TypingSubmitBudgetMs)
-                autoTypingSubmitBudget.Value = automationSettings.TypingSubmitBudgetMs;
+            ApplyTimingControls();
+        }
+
+        private void ApplyTimingControls()
+        {
+            if (automationSettings == null || autoTimingMode == null) return;
+            updatingTimingControls = true;
+            try
+            {
+                KeyboundTimingProfile profile = automationSettings.GetTimingProfile(String.Empty);
+                autoTimingMode.SelectedIndex = TimingModeIndex(automationSettings.TimingMode);
+                SetNumeric(autoReactionDelay, profile.ReactionDelayMs);
+                SetNumeric(autoCharacterDelay, profile.CharacterDelayMs);
+                SetNumeric(autoSubmitDelay, profile.SubmitDelayMs);
+                SetNumeric(autoTotalMinimum, profile.TotalMinimumMs);
+                SetNumeric(autoTotalMaximum, profile.TotalMaximumMs);
+                SetNumeric(autoJitterPercent, profile.JitterPercent);
+                bool editable = automationSettings.TimingMode == KeyboundActSettings.CustomMode;
+                autoReactionDelay.Enabled = editable;
+                autoCharacterDelay.Enabled = editable;
+                autoSubmitDelay.Enabled = editable;
+                autoTotalMinimum.Enabled = editable;
+                autoTotalMaximum.Enabled = editable;
+                autoJitterPercent.Enabled = editable;
+            }
+            finally { updatingTimingControls = false; }
+        }
+
+        private static void SetNumeric(NumericUpDown control, int value)
+        {
+            decimal bounded = Math.Min(control.Maximum, Math.Max(control.Minimum, value));
+            if (control.Value != bounded) control.Value = bounded;
         }
 
         private void SaveAutomationSettings()
@@ -402,20 +428,18 @@ namespace ActEnhanced.KeyboundProbe
             }
         }
 
-        private static int TargetOrderIndex(string order)
+        private static int TimingModeIndex(string mode)
         {
-            if (order == "slot_desc") return 1;
-            if (order == "shortest") return 2;
-            if (order == "longest") return 3;
+            if (mode == KeyboundActSettings.WarriorMode) return 1;
+            if (mode == KeyboundActSettings.CustomMode) return 2;
             return 0;
         }
 
-        private static string TargetOrderName(int index)
+        private static string TimingModeName(int index)
         {
-            if (index == 1) return "slot_desc";
-            if (index == 2) return "shortest";
-            if (index == 3) return "longest";
-            return "slot_asc";
+            if (index == 1) return KeyboundActSettings.WarriorMode;
+            if (index == 2) return KeyboundActSettings.CustomMode;
+            return KeyboundActSettings.HumanMode;
         }
 
         private static Button AddButton(Control parent, string text, EventHandler click)
@@ -751,9 +775,6 @@ namespace ActEnhanced.KeyboundProbe
                 autoInputStatus.Text = "自动输入：" + combatPlanner.PauseDescription(DateTime.UtcNow);
                 return;
             }
-            TryStartActivityPulse();
-            if (activityPulseActive)
-                return;
             bool visualInterferenceActive = DateTime.UtcNow <= visualInterferenceUntilUtc;
             var candidates = new List<KtgMemoryTarget>();
             foreach (KtgMemoryTarget target in available)
@@ -780,18 +801,6 @@ namespace ActEnhanced.KeyboundProbe
                     directFocusEntityId, selectionUtc);
                 if (planned != 0)
                     return planned;
-                string order = automationSettings == null ? "slot_asc" : automationSettings.TargetOrder;
-                if (order == "slot_desc") return right.Slot.CompareTo(left.Slot);
-                if (order == "shortest")
-                {
-                    int length = left.Text.Length.CompareTo(right.Text.Length);
-                    return length != 0 ? length : left.Slot.CompareTo(right.Slot);
-                }
-                if (order == "longest")
-                {
-                    int length = right.Text.Length.CompareTo(left.Text.Length);
-                    return length != 0 ? length : left.Slot.CompareTo(right.Slot);
-                }
                 return left.Slot.CompareTo(right.Slot);
             });
             StartDirectInput(candidates[0]);
@@ -809,26 +818,15 @@ namespace ActEnhanced.KeyboundProbe
             directEchoVerified = false;
             directConfirmationDeadlineUtc = DateTime.MinValue;
 
-            var random = new Random(unchecked(Environment.TickCount * 31 + (int)(sequence & 0x7FFFFFFF)));
-            bool blatant = automationSettings != null && automationSettings.BlatantMode;
-            bool humanize = automationSettings == null || automationSettings.Humanize;
-            int startDelay = blatant ? 0 : RandomDelay(random,
-                automationSettings.StartDelayMinMs,
-                humanize ? automationSettings.StartDelayMaxMs : automationSettings.StartDelayMinMs);
-            int characterDelay = blatant ? 0 : automationSettings.CharacterDelayMs;
-            if (!blatant && humanize && automationSettings.JitterPercent != 0)
-            {
-                int jitter = characterDelay * automationSettings.JitterPercent / 100;
-                characterDelay = RandomDelay(random, Math.Max(0, characterDelay - jitter),
-                    characterDelay + jitter);
-            }
-            int submitDelay = blatant ? 0 : RandomDelay(random,
-                automationSettings.SubmitDelayMinMs,
-                humanize ? automationSettings.SubmitDelayMaxMs : automationSettings.SubmitDelayMinMs);
-            automationSettings.Normalize();
-            int typingSubmitMinimumMs = automationSettings.TypingSubmitMinimumMs;
-            int typingSubmitBudgetMs = automationSettings.TypingSubmitBudgetMs;
             string typedText = GameInputSender.NormalizeChineseAnswer(target.Text);
+            DateTime selectedUtc = DateTime.UtcNow;
+            var random = new Random(unchecked(Environment.TickCount * 31 + (int)(sequence & 0x7FFFFFFF)));
+            KeyboundWord physicalWord = selectedUtc >= nextPhysicalPinyinUtc && wordTable != null
+                ? wordTable.GetRandomDifferent(target.Text, random) : null;
+            string physicalPinyin = physicalWord == null ? String.Empty : physicalWord.InputText;
+            bool usePhysicalPinyin = physicalPinyin.Length != 0;
+            KeyboundTimingPlan timing = (automationSettings ?? new KeyboundActSettings())
+                .CreateTimingPlan(typedText, random);
             autoInputStatus.Text = "自动输入：窗口投递 “" + target.Text + "” → 0x" +
                 target.EntityId.ToString("X8");
             WriteAutomationDiagnostic("SELECT", target.EntityId, target.Text, "slot=" + target.Slot +
@@ -836,6 +834,11 @@ namespace ActEnhanced.KeyboundProbe
                 "; combatStage=P" + combatPlanner.CombatStage +
                 "; bnpc=0x" + combatPlanner.GetActorType(target.EntityId).ToString("X") +
                 "; appearance=" + combatPlanner.GetAppearanceOrder(target.EntityId) +
+                "; pinyin=" + (physicalPinyin.Length == 0 ? "<missing>" : physicalPinyin) +
+                "; physicalWord=" + (physicalWord == null ? "<none>" : physicalWord.DisplayText) +
+                "; physicalPinyin=" + usePhysicalPinyin +
+                "; timingMode=" + timing.Mode + "; plannedMs=" + timing.PlannedTotalMs +
+                "; minimumMs=" + timing.TotalMinimumMs + "; maximumMs=" + timing.TotalMaximumMs +
                 "; " + GameInputSender.DescribeFfxivInputTarget());
 
             var worker = new System.Threading.Thread((System.Threading.ThreadStart)delegate
@@ -848,42 +851,63 @@ namespace ActEnhanced.KeyboundProbe
                         System.Threading.Interlocked.Read(ref directInputSequence) == sequence &&
                         combatPlanner.CanAttack && !combatPlanner.ShouldPause(DateTime.UtcNow);
                 };
-                if (startDelay != 0) System.Threading.Thread.Sleep(startDelay);
+                DateTime cadenceDeadlineUtc = selectedUtc.AddMilliseconds(timing.TotalMaximumMs);
+                if (timing.ReactionDelayMs != 0)
+                    WaitCadenceDelay(timing.ReactionDelayMs, cadenceDeadlineUtc, current);
                 GameInputResult result = EnsureKeyboundInputFocused(target, current);
                 WriteAutomationDiagnostic(result == GameInputResult.Sent ? "FOCUS_OK" : "FOCUS_FAIL",
                     target.EntityId, target.Text, result + "; " + GameInputSender.DescribeFfxivInputTarget());
                 if (result == GameInputResult.Sent)
                 {
-                    DateTime typingStartedUtc = DateTime.UtcNow;
-                    DateTime earliestSubmitUtc = typingStartedUtc.AddMilliseconds(
-                        typingSubmitMinimumMs);
-                    DateTime submitDeadlineUtc = typingStartedUtc.AddMilliseconds(
-                        typingSubmitBudgetMs);
-                    result = TypeTextWithEcho(target, typedText, characterDelay, current,
-                        submitDeadlineUtc);
+                    DateTime earliestSubmitUtc = selectedUtc.AddMilliseconds(timing.TotalMinimumMs);
+                    if (usePhysicalPinyin)
+                    {
+                        int keyHoldMs = PinyinPreludeKeyHoldMilliseconds(timing);
+                        result = GameInputSender.SendPhysicalPinyinAttempt(
+                            physicalPinyin, keyHoldMs, current);
+                        bool attemptCleared = result == GameInputResult.Sent &&
+                            WaitForInputText(String.Empty, 800, current);
+                        WriteAutomationDiagnostic(attemptCleared ? "PHYSICAL_KEYS_OK" :
+                                "PHYSICAL_KEYS_FAIL", target.EntityId, target.Text,
+                            result + "; pinyin=" + physicalPinyin + "; holdMs=" + keyHoldMs +
+                            "; wrongWord=" + physicalWord.DisplayText +
+                            "; submitted=true; cleared=" + attemptCleared +
+                            "; actual=" + CurrentInputText());
+                        if (attemptCleared)
+                        {
+                            nextPhysicalPinyinUtc = DateTime.UtcNow.AddMilliseconds(
+                                NextPhysicalPinyinInterval());
+                            result = EnsureKeyboundInputFocused(target, current);
+                        }
+                        else if (result == GameInputResult.Sent)
+                            result = GameInputResult.NativeInputFailed;
+                    }
+                    if (result == GameInputResult.Sent)
+                        result = TypeTextWithEcho(target, typedText, timing.CharacterDelaysMs,
+                            current, cadenceDeadlineUtc);
                     echoVerified = result == GameInputResult.Sent;
                     WriteAutomationDiagnostic(result == GameInputResult.Sent ? "TEXT_OK" : "TEXT_FAIL",
                         target.EntityId, target.Text, result + "; typed=" + typedText +
-                        "; minimumMs=" + typingSubmitMinimumMs +
-                        "; budgetMs=" + typingSubmitBudgetMs);
+                        "; minimumMs=" + timing.TotalMinimumMs +
+                        "; maximumMs=" + timing.TotalMaximumMs);
                     if (result == GameInputResult.Sent)
                     {
-                        int remaining = RemainingMilliseconds(submitDeadlineUtc);
-                        int boundedSubmitDelay = Math.Min(submitDelay, Math.Max(0, remaining - 10));
+                        int remaining = RemainingMilliseconds(cadenceDeadlineUtc);
+                        int boundedSubmitDelay = Math.Min(timing.SubmitDelayMs, remaining);
                         DateTime configuredSubmitUtc = DateTime.UtcNow.AddMilliseconds(boundedSubmitDelay);
                         DateTime notBeforeUtc = configuredSubmitUtc > earliestSubmitUtc
                             ? configuredSubmitUtc : earliestSubmitUtc;
-                        result = WaitUntilSubmitWindow(notBeforeUtc, submitDeadlineUtc, current)
+                        if (notBeforeUtc > cadenceDeadlineUtc) notBeforeUtc = cadenceDeadlineUtc;
+                        result = WaitUntilSubmitWindow(notBeforeUtc, cadenceDeadlineUtc, current)
                             ? GameInputSender.PostEnterToFfxiv(current)
                             : (current() ? GameInputResult.NativeInputFailed : GameInputResult.Cancelled);
                         if (result == GameInputResult.Sent)
-                            inputCleared = WaitForInputText(String.Empty,
-                                Math.Min(350, RemainingMilliseconds(submitDeadlineUtc)), current);
+                            inputCleared = WaitForInputText(String.Empty, 350, current);
                     }
                     WriteAutomationDiagnostic(result == GameInputResult.Sent ? "ENTER_OK" : "ENTER_FAIL",
                         target.EntityId, target.Text, result + "; remainingMs=" +
-                        RemainingMilliseconds(submitDeadlineUtc) + "; elapsedMs=" +
-                        Math.Max(0, (int)(DateTime.UtcNow - typingStartedUtc).TotalMilliseconds) +
+                        RemainingMilliseconds(cadenceDeadlineUtc) + "; elapsedMs=" +
+                        Math.Max(0, (int)(DateTime.UtcNow - selectedUtc).TotalMilliseconds) +
                         "; inputCleared=" + inputCleared);
                 }
                 if (autoInputStatus == null || autoInputStatus.IsDisposed)
@@ -902,17 +926,57 @@ namespace ActEnhanced.KeyboundProbe
             worker.Start();
         }
 
+        private static int NextPhysicalPinyinInterval()
+        {
+            var random = new Random(unchecked(Environment.TickCount * 397));
+            return PhysicalPinyinSchedule.NextIntervalMilliseconds(random);
+        }
+
+        private static int PinyinPreludeKeyHoldMilliseconds(KeyboundTimingPlan timing)
+        {
+            if (timing == null)
+                return 18;
+            if (String.Equals(timing.Mode, KeyboundActSettings.WarriorMode,
+                StringComparison.Ordinal))
+                return 8;
+            if (String.Equals(timing.Mode, KeyboundActSettings.HumanMode,
+                StringComparison.Ordinal))
+                return 18;
+            int total = 0;
+            int count = 0;
+            foreach (int delay in timing.CharacterDelaysMs ?? new int[0])
+            {
+                total += delay;
+                count++;
+            }
+            int derived = count == 0 ? 18 : total / count / 4;
+            return Math.Max(8, Math.Min(25, derived));
+        }
+
         private static bool WaitUntilSubmitWindow(DateTime notBeforeUtc, DateTime deadlineUtc,
             Func<bool> current)
         {
             while (DateTime.UtcNow < notBeforeUtc)
             {
-                if (!current() || DateTime.UtcNow >= deadlineUtc)
-                    return false;
+                if (!current()) return false;
+                if (DateTime.UtcNow >= deadlineUtc) break;
                 int remaining = Math.Max(1, (int)(notBeforeUtc - DateTime.UtcNow).TotalMilliseconds);
                 System.Threading.Thread.Sleep(Math.Min(25, remaining));
             }
-            return current() && DateTime.UtcNow < deadlineUtc;
+            return current();
+        }
+
+        private static bool WaitCadenceDelay(int delayMs, DateTime deadlineUtc, Func<bool> current)
+        {
+            DateTime targetUtc = DateTime.UtcNow.AddMilliseconds(
+                Math.Min(Math.Max(0, delayMs), RemainingMilliseconds(deadlineUtc)));
+            while (DateTime.UtcNow < targetUtc)
+            {
+                if (!current()) return false;
+                int remaining = Math.Max(1, (int)(targetUtc - DateTime.UtcNow).TotalMilliseconds);
+                System.Threading.Thread.Sleep(Math.Min(25, remaining));
+            }
+            return current();
         }
 
         private void ApplyDirectInputResult(long sequence, KtgMemoryTarget target, GameInputResult result,
@@ -1010,7 +1074,7 @@ namespace ActEnhanced.KeyboundProbe
         }
 
         private GameInputResult TypeTextWithEcho(KtgMemoryTarget target, string typedText,
-            int characterDelay, Func<bool> current, DateTime submitDeadlineUtc)
+            int[] characterDelays, Func<bool> current, DateTime cadenceDeadlineUtc)
         {
             KtgInputState initial = memoryReader == null ? null : memoryReader.ReadInputState();
             if (initial == null || !initial.Available)
@@ -1019,7 +1083,7 @@ namespace ActEnhanced.KeyboundProbe
                     "submission-blocked; no blind fallback");
                 return GameInputResult.NativeInputFailed;
             }
-            if (!ClearInputWithEcho(target, initial.Text, current, submitDeadlineUtc))
+            if (!ClearInputWithEcho(target, initial.Text, current))
                 return GameInputResult.NativeInputFailed;
 
             string expected = String.Empty;
@@ -1027,8 +1091,11 @@ namespace ActEnhanced.KeyboundProbe
             {
                 char character = typedText[characterIndex];
                 if (!current()) return GameInputResult.Cancelled;
-                if (RemainingMilliseconds(submitDeadlineUtc) <= 0)
-                    return GameInputResult.NativeInputFailed;
+                int characterDelay = characterDelays != null && characterIndex < characterDelays.Length
+                    ? characterDelays[characterIndex] : 0;
+                if (characterDelay != 0 &&
+                    !WaitCadenceDelay(characterDelay, cadenceDeadlineUtc, current))
+                    return GameInputResult.Cancelled;
                 expected += character;
                 GameInputResult result = GameInputResult.NativeInputFailed;
                 bool echoed = false;
@@ -1037,8 +1104,7 @@ namespace ActEnhanced.KeyboundProbe
                     result = GameInputSender.PostUnicodeToFfxiv(character.ToString(), 0, current);
                     if (result != GameInputResult.Sent)
                         break;
-                    echoed = WaitForInputText(expected,
-                        Math.Min(300, RemainingMilliseconds(submitDeadlineUtc)), current);
+                    echoed = WaitForInputText(expected, 300, current);
                     WriteAutomationDiagnostic(echoed ? "ECHO_CHAR_OK" : "ECHO_CHAR_RETRY",
                         target.EntityId, target.Text, "char=" + character + "; attempt=" + attempt +
                         "; expected=" + expected + "; actual=" + CurrentInputText());
@@ -1047,18 +1113,8 @@ namespace ActEnhanced.KeyboundProbe
                 }
                 if (!echoed)
                     return result == GameInputResult.Sent ? GameInputResult.NativeInputFailed : result;
-                if (characterDelay != 0)
-                {
-                    int charactersLeft = typedText.Length - characterIndex - 1;
-                    int budgetedDelay = charactersLeft == 0 ? 0 :
-                        Math.Max(0, (RemainingMilliseconds(submitDeadlineUtc) - 75) /
-                        (charactersLeft + 1));
-                    int delay = Math.Min(characterDelay, budgetedDelay);
-                    if (delay != 0) System.Threading.Thread.Sleep(delay);
-                }
             }
-            return WaitForInputText(typedText,
-                Math.Min(150, RemainingMilliseconds(submitDeadlineUtc)), current)
+            return WaitForInputText(typedText, 150, current)
                 ? GameInputResult.Sent
                 : GameInputResult.NativeInputFailed;
         }
@@ -1118,19 +1174,16 @@ namespace ActEnhanced.KeyboundProbe
             return false;
         }
 
-        private bool ClearInputWithEcho(KtgMemoryTarget target, string existing, Func<bool> current,
-            DateTime submitDeadlineUtc)
+        private bool ClearInputWithEcho(KtgMemoryTarget target, string existing, Func<bool> current)
         {
             string text = existing ?? String.Empty;
             for (int index = 0; index < text.Length; index++)
             {
-                if (!current() || RemainingMilliseconds(submitDeadlineUtc) <= 0 ||
-                    GameInputSender.PostBackspaceToFfxiv(current) != GameInputResult.Sent)
+                if (!current() || GameInputSender.PostBackspaceToFfxiv(current) != GameInputResult.Sent)
                     return false;
                 System.Threading.Thread.Sleep(25);
             }
-            bool cleared = WaitForInputText(String.Empty,
-                Math.Min(400, RemainingMilliseconds(submitDeadlineUtc)), current);
+            bool cleared = WaitForInputText(String.Empty, 400, current);
             WriteAutomationDiagnostic(cleared ? "CLEAR_OK" : "CLEAR_FAIL", target.EntityId,
                 target.Text, "before=" + text + "; after=" + CurrentInputText());
             return cleared;
@@ -1177,95 +1230,6 @@ namespace ActEnhanced.KeyboundProbe
                     remove.Add(key);
             foreach (string key in remove)
                 directFailureCounts.Remove(key);
-        }
-
-        private static int RandomDelay(Random random, int minimum, int maximum)
-        {
-            return maximum <= minimum ? minimum : random.Next(minimum, maximum + 1);
-        }
-
-        private static int NextActivityPulseDelay(bool initial)
-        {
-            var random = new Random(unchecked(Environment.TickCount * 397));
-            return initial ? random.Next(20000, 35001) : random.Next(25000, 55001);
-        }
-
-        private void TryStartActivityPulse()
-        {
-            if (autoInputEnabled == null || !autoInputEnabled.Checked || !keyboundAddonPresent ||
-                directAttemptActive || activityPulseActive || DateTime.UtcNow < nextActivityPulseUtc)
-                return;
-            KtgInputState state = memoryReader == null ? null : memoryReader.ReadInputState();
-            if (state == null || !state.Available || state.Focused || !String.IsNullOrEmpty(state.Text))
-            {
-                nextActivityPulseUtc = DateTime.UtcNow.AddSeconds(2);
-                return;
-            }
-
-            long sequence = System.Threading.Interlocked.Increment(ref activityPulseSequence);
-            int generation = System.Threading.Interlocked.CompareExchange(
-                ref activityPulseGeneration, 0, 0);
-            activityPulseActive = true;
-            nextActivityPulseUtc = DateTime.UtcNow.AddMilliseconds(NextActivityPulseDelay(false));
-            int digit = new Random(unchecked(Environment.TickCount * 31 + (int)sequence)).Next(0, 10);
-            string expected = digit.ToString();
-            WriteAutomationDiagnostic("ACTIVITY_START", 0, String.Empty,
-                "physical wrong attempt; digit=" + expected);
-
-            var worker = new System.Threading.Thread((System.Threading.ThreadStart)delegate
-            {
-                Func<bool> current = delegate
-                {
-                    return System.Threading.Interlocked.CompareExchange(
-                        ref activityPulseGeneration, 0, 0) == generation &&
-                        System.Threading.Interlocked.Read(ref activityPulseSequence) == sequence;
-                };
-                GameInputResult result = GameInputSender.SubmitEnter(current);
-                bool focused = result == GameInputResult.Sent && WaitForInputFocus(500, current);
-                bool echoed = false;
-                bool cleared = false;
-                if (focused)
-                {
-                    result = GameInputSender.SendPhysicalVirtualKey((ushort)('0' + digit), current);
-                    echoed = result == GameInputResult.Sent && WaitForInputText(expected, 500, current);
-                    if (echoed)
-                    {
-                        result = GameInputSender.SubmitEnter(current);
-                        cleared = result == GameInputResult.Sent &&
-                            WaitForInputText(String.Empty, 650, current);
-                    }
-                    else
-                    {
-                        GameInputSender.SendPhysicalVirtualKey(0x08, current);
-                        GameInputSender.SubmitEnter(current);
-                    }
-                }
-                WriteAutomationDiagnostic(cleared ? "ACTIVITY_OK" : "ACTIVITY_FAIL", 0,
-                    String.Empty, "digit=" + expected + "; result=" + result +
-                    "; focused=" + focused + "; echoed=" + echoed + "; cleared=" + cleared +
-                    "; actual=" + CurrentInputText());
-                if (autoInputStatus == null || autoInputStatus.IsDisposed)
-                    return;
-                try
-                {
-                    autoInputStatus.BeginInvoke((Action)(delegate
-                    {
-                        if (System.Threading.Interlocked.Read(ref activityPulseSequence) != sequence ||
-                            System.Threading.Interlocked.CompareExchange(
-                                ref activityPulseGeneration, 0, 0) != generation)
-                            return;
-                        activityPulseActive = false;
-                        directRetryAfterUtc = DateTime.UtcNow.AddMilliseconds(120);
-                        autoInputStatus.Text = cleared
-                            ? "自动输入：已发送一次随机真实按键活动"
-                            : "自动输入：随机真实按键未完成，稍后重试";
-                    }));
-                }
-                catch { }
-            });
-            worker.IsBackground = true;
-            worker.SetApartmentState(System.Threading.ApartmentState.STA);
-            worker.Start();
         }
 
         private void WriteAutomationDiagnostic(string kind, uint entityId, string text, string detail)
@@ -1395,19 +1359,6 @@ namespace ActEnhanced.KeyboundProbe
             var visible = new HashSet<uint>();
             snapshot.Targets.Sort(delegate(KeyboundBridgeTarget left, KeyboundBridgeTarget right)
             {
-                string order = automationSettings == null ? "slot_asc" : automationSettings.TargetOrder;
-                if (order == "slot_desc")
-                    return right.Slot.CompareTo(left.Slot);
-                if (order == "shortest")
-                {
-                    int length = left.Text.Length.CompareTo(right.Text.Length);
-                    return length != 0 ? length : left.Slot.CompareTo(right.Slot);
-                }
-                if (order == "longest")
-                {
-                    int length = right.Text.Length.CompareTo(left.Text.Length);
-                    return length != 0 ? length : left.Slot.CompareTo(right.Slot);
-                }
                 return left.Slot.CompareTo(right.Slot);
             });
 
@@ -1835,7 +1786,6 @@ namespace ActEnhanced.KeyboundProbe
 
         private void RefreshUi()
         {
-            TryStartActivityPulse();
             ScheduleMemoryPoll();
             if (directAttemptActive && directAwaitingConfirmation &&
                 directConfirmationDeadlineUtc != DateTime.MinValue &&

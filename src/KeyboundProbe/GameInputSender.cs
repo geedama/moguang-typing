@@ -24,6 +24,19 @@ namespace ActEnhanced.KeyboundProbe
         public string ActualText;
     }
 
+    internal static class PhysicalPinyinSchedule
+    {
+        internal const int MinimumIntervalMilliseconds = 45000;
+        internal const int MaximumIntervalMilliseconds = 60000;
+
+        internal static int NextIntervalMilliseconds(Random random)
+        {
+            if (random == null) throw new ArgumentNullException("random");
+            return random.Next(MinimumIntervalMilliseconds,
+                MaximumIntervalMilliseconds + 1);
+        }
+    }
+
     public static class GameInputSender
     {
         internal const int DirectTypingToSubmitMinimumMs = 1500;
@@ -83,6 +96,35 @@ namespace ActEnhanced.KeyboundProbe
             if (!IsFfxivForeground())
                 return GameInputResult.FfxivNotForeground;
             return SendPhysicalKey(virtualKey)
+                ? GameInputResult.Sent
+                : GameInputResult.NativeInputFailed;
+        }
+
+        public static GameInputResult SendPhysicalPinyinAttempt(string fullPinyin,
+            int keyHoldMilliseconds, Func<bool> continuePredicate)
+        {
+            string keys = NormalizeFullPinyinKeys(fullPinyin);
+            if (keys.Length == 0)
+                return GameInputResult.EmptyText;
+            int hold = Math.Max(8, Math.Min(35, keyHoldMilliseconds));
+            foreach (char character in keys)
+            {
+                if (!CanContinue(continuePredicate))
+                    return GameInputResult.Cancelled;
+                if (!IsFfxivForeground())
+                    return GameInputResult.FfxivNotForeground;
+                ushort virtualKey = character == '\'' ? (ushort)0xDE :
+                    (ushort)Char.ToUpperInvariant(character);
+                if (!SendPhysicalHeldKey(virtualKey, hold))
+                    return GameInputResult.NativeInputFailed;
+            }
+            if (!CanContinue(continuePredicate) || !SendPhysicalHeldKey(0x20, hold))
+                return CanContinue(continuePredicate)
+                    ? GameInputResult.NativeInputFailed : GameInputResult.Cancelled;
+            Thread.Sleep(80);
+            if (!CanContinue(continuePredicate))
+                return GameInputResult.Cancelled;
+            return SendPhysicalHeldKey(0x0D, Math.Max(20, hold))
                 ? GameInputResult.Sent
                 : GameInputResult.NativeInputFailed;
         }
@@ -433,6 +475,24 @@ namespace ActEnhanced.KeyboundProbe
             };
             return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(Input))) ==
                 (uint)inputs.Length;
+        }
+
+        private static bool SendPhysicalHeldKey(ushort virtualKey, int holdMilliseconds)
+        {
+            ushort scanCode = (ushort)MapVirtualKey(virtualKey, 0);
+            if (scanCode == 0)
+                return false;
+            Input[] inputs =
+            {
+                CreatePhysicalInput(scanCode, 0)
+            };
+            if (SendInput(1, inputs, Marshal.SizeOf(typeof(Input))) != 1)
+                return false;
+            Thread.Sleep(holdMilliseconds);
+            inputs[0] = CreatePhysicalInput(scanCode, KeyEventKeyUp);
+            bool sent = SendInput(1, inputs, Marshal.SizeOf(typeof(Input))) == 1;
+            Thread.Sleep(3);
+            return sent;
         }
 
         private static bool SendPhysicalChord(ushort modifier, ushort key)

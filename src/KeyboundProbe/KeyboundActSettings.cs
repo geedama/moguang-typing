@@ -5,26 +5,58 @@ using System.IO;
 
 namespace ActEnhanced.KeyboundProbe
 {
+    public sealed class KeyboundTimingPlan
+    {
+        public string Mode;
+        public int ReactionDelayMs;
+        public int[] CharacterDelaysMs;
+        public int SubmitDelayMs;
+        public int TotalMinimumMs;
+        public int TotalMaximumMs;
+
+        public int PlannedTotalMs
+        {
+            get
+            {
+                int total = ReactionDelayMs + SubmitDelayMs;
+                if (CharacterDelaysMs != null)
+                    foreach (int delay in CharacterDelaysMs)
+                        total += delay;
+                return total;
+            }
+        }
+    }
+
+    public sealed class KeyboundTimingProfile
+    {
+        public string Mode;
+        public int ReactionDelayMs;
+        public int CharacterDelayMs;
+        public int SubmitDelayMs;
+        public int TotalMinimumMs;
+        public int TotalMaximumMs;
+        public int JitterPercent;
+    }
+
     public sealed class KeyboundActSettings
     {
-        public bool AutoLaunchDalamud = true;
-        public bool Humanize = true;
-        public bool BlatantMode;
-        public int StartDelayMinMs = 600;
-        public int StartDelayMaxMs = 1500;
-        public int CharacterDelayMs = 120;
-        public int JitterPercent = 40;
-        public int SubmitDelayMinMs = 200;
-        public int SubmitDelayMaxMs = 500;
-        public int TypingSubmitMinimumMs = GameInputSender.DirectTypingToSubmitMinimumMs;
-        public int TypingSubmitBudgetMs = GameInputSender.DirectTypingToSubmitBudgetMs;
-        public string TargetOrder = "slot_asc";
+        public const string HumanMode = "human";
+        public const string WarriorMode = "warrior";
+        public const string CustomMode = "custom";
+
+        public bool AutoLaunchDalamud = false;
+        public string TimingMode = HumanMode;
+        public int CustomReactionDelayMs = 150;
+        public int CustomCharacterDelayMs = 70;
+        public int CustomSubmitDelayMs = 150;
+        public int CustomTotalMinimumMs = 1000;
+        public int CustomTotalMaximumMs = 3000;
+        public int CustomJitterPercent = 20;
 
         public static KeyboundActSettings Load(string path)
         {
             var value = new KeyboundActSettings();
-            if (!File.Exists(path))
-                return value;
+            if (!File.Exists(path)) return value;
             try
             {
                 var entries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -32,27 +64,28 @@ namespace ActEnhanced.KeyboundProbe
                 {
                     string line = raw.Trim();
                     int separator = line.IndexOf('=');
-                    if (separator <= 0 || line.StartsWith("#", StringComparison.Ordinal))
-                        continue;
+                    if (separator <= 0 || line.StartsWith("#", StringComparison.Ordinal)) continue;
                     entries[line.Substring(0, separator).Trim()] = line.Substring(separator + 1).Trim();
                 }
                 value.AutoLaunchDalamud = ReadBool(entries, "AutoLaunchDalamud", value.AutoLaunchDalamud);
-                value.Humanize = ReadBool(entries, "Humanize", value.Humanize);
-                value.BlatantMode = ReadBool(entries, "BlatantMode", value.BlatantMode);
-                value.StartDelayMinMs = ReadInt(entries, "StartDelayMinMs", value.StartDelayMinMs, 0, 5000);
-                value.StartDelayMaxMs = ReadInt(entries, "StartDelayMaxMs", value.StartDelayMaxMs, 0, 5000);
-                value.CharacterDelayMs = ReadInt(entries, "CharacterDelayMs", value.CharacterDelayMs, 0, 500);
-                value.JitterPercent = ReadInt(entries, "JitterPercent", value.JitterPercent, 0, 80);
-                value.SubmitDelayMinMs = ReadInt(entries, "SubmitDelayMinMs", value.SubmitDelayMinMs, 0, 2000);
-                value.SubmitDelayMaxMs = ReadInt(entries, "SubmitDelayMaxMs", value.SubmitDelayMaxMs, 0, 2000);
-                value.TypingSubmitMinimumMs = ReadInt(entries, "TypingSubmitMinimumMs",
-                    value.TypingSubmitMinimumMs, 0, 10000);
-                value.TypingSubmitBudgetMs = ReadInt(entries, "TypingSubmitBudgetMs",
-                    value.TypingSubmitBudgetMs, 250, 10000);
-                string order;
-                if (entries.TryGetValue("TargetOrder", out order) &&
-                    (order == "slot_asc" || order == "slot_desc" || order == "shortest" || order == "longest"))
-                    value.TargetOrder = order;
+                string mode;
+                if (entries.TryGetValue("TimingMode", out mode) && IsMode(mode))
+                {
+                    value.TimingMode = mode.ToLowerInvariant();
+                    value.CustomReactionDelayMs = ReadInt(entries, "CustomReactionDelayMs",
+                        value.CustomReactionDelayMs, 0, 5000);
+                    value.CustomCharacterDelayMs = ReadInt(entries, "CustomCharacterDelayMs",
+                        value.CustomCharacterDelayMs, 0, 1000);
+                    value.CustomSubmitDelayMs = ReadInt(entries, "CustomSubmitDelayMs",
+                        value.CustomSubmitDelayMs, 0, 5000);
+                    value.CustomTotalMinimumMs = ReadInt(entries, "CustomTotalMinimumMs",
+                        value.CustomTotalMinimumMs, 0, 10000);
+                    value.CustomTotalMaximumMs = ReadInt(entries, "CustomTotalMaximumMs",
+                        value.CustomTotalMaximumMs, 100, 10000);
+                    value.CustomJitterPercent = ReadInt(entries, "CustomJitterPercent",
+                        value.CustomJitterPercent, 0, 80);
+                }
+                else MigrateLegacy(entries, value);
             }
             catch { }
             value.Normalize();
@@ -63,61 +96,140 @@ namespace ActEnhanced.KeyboundProbe
         {
             Normalize();
             string directory = Path.GetDirectoryName(path);
-            if (!String.IsNullOrEmpty(directory))
-                Directory.CreateDirectory(directory);
+            if (!String.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
             File.WriteAllLines(path, new[]
             {
-                "# ActEnhanced Keybound settings",
+                "# Moguang Typing settings",
                 "AutoLaunchDalamud=" + AutoLaunchDalamud,
-                "Humanize=" + Humanize,
-                "BlatantMode=" + BlatantMode,
-                "StartDelayMinMs=" + StartDelayMinMs.ToString(CultureInfo.InvariantCulture),
-                "StartDelayMaxMs=" + StartDelayMaxMs.ToString(CultureInfo.InvariantCulture),
-                "CharacterDelayMs=" + CharacterDelayMs.ToString(CultureInfo.InvariantCulture),
-                "JitterPercent=" + JitterPercent.ToString(CultureInfo.InvariantCulture),
-                "SubmitDelayMinMs=" + SubmitDelayMinMs.ToString(CultureInfo.InvariantCulture),
-                "SubmitDelayMaxMs=" + SubmitDelayMaxMs.ToString(CultureInfo.InvariantCulture),
-                "TypingSubmitMinimumMs=" + TypingSubmitMinimumMs.ToString(CultureInfo.InvariantCulture),
-                "TypingSubmitBudgetMs=" + TypingSubmitBudgetMs.ToString(CultureInfo.InvariantCulture),
-                "TargetOrder=" + TargetOrder
+                "TimingMode=" + TimingMode,
+                "CustomReactionDelayMs=" + CustomReactionDelayMs.ToString(CultureInfo.InvariantCulture),
+                "CustomCharacterDelayMs=" + CustomCharacterDelayMs.ToString(CultureInfo.InvariantCulture),
+                "CustomSubmitDelayMs=" + CustomSubmitDelayMs.ToString(CultureInfo.InvariantCulture),
+                "CustomTotalMinimumMs=" + CustomTotalMinimumMs.ToString(CultureInfo.InvariantCulture),
+                "CustomTotalMaximumMs=" + CustomTotalMaximumMs.ToString(CultureInfo.InvariantCulture),
+                "CustomJitterPercent=" + CustomJitterPercent.ToString(CultureInfo.InvariantCulture)
             });
+        }
+
+        public KeyboundTimingProfile GetTimingProfile(string text)
+        {
+            Normalize();
+            int length = String.IsNullOrEmpty(text) ? 0 : text.Length;
+            if (TimingMode == WarriorMode)
+                return Profile(WarriorMode, 50, 30, 50, 500, 500, 0);
+            if (TimingMode == CustomMode)
+                return Profile(CustomMode, CustomReactionDelayMs, CustomCharacterDelayMs,
+                    CustomSubmitDelayMs, CustomTotalMinimumMs, CustomTotalMaximumMs,
+                    CustomJitterPercent);
+            return Profile(HumanMode, 150, 70, 150, length > 6 ? 2000 : 1000, 3000, 20);
+        }
+
+        public KeyboundTimingPlan CreateTimingPlan(string text, Random random)
+        {
+            KeyboundTimingProfile profile = GetTimingProfile(text);
+            int characters = String.IsNullOrEmpty(text) ? 0 : text.Length;
+            int totalMinimum = WithJitter(profile.TotalMinimumMs, profile.JitterPercent, random);
+            int totalMaximum = WithJitter(profile.TotalMaximumMs, profile.JitterPercent, random);
+            if (totalMaximum < totalMinimum) totalMaximum = totalMinimum;
+            var plan = new KeyboundTimingPlan
+            {
+                Mode = profile.Mode,
+                ReactionDelayMs = WithJitter(profile.ReactionDelayMs, profile.JitterPercent, random),
+                CharacterDelaysMs = new int[characters],
+                SubmitDelayMs = WithJitter(profile.SubmitDelayMs, profile.JitterPercent, random),
+                TotalMinimumMs = totalMinimum,
+                TotalMaximumMs = totalMaximum
+            };
+            for (int index = 0; index < characters; index++)
+                plan.CharacterDelaysMs[index] = WithJitter(profile.CharacterDelayMs,
+                    profile.JitterPercent, random);
+
+            int total = plan.PlannedTotalMs;
+            if (total < plan.TotalMinimumMs)
+                plan.SubmitDelayMs += plan.TotalMinimumMs - total;
+            else if (total > plan.TotalMaximumMs)
+                ScaleToMaximum(plan, total);
+            return plan;
         }
 
         public int NextEquivalentTypingDelay(string text, Random random)
         {
-            Normalize();
-            if (BlatantMode)
-                return 0;
-
-            int total = Humanize ? NextRange(random, StartDelayMinMs, StartDelayMaxMs) : StartDelayMinMs;
-            int characters = String.IsNullOrEmpty(text) ? 0 : text.Length;
-            for (int index = 0; index < characters; index++)
-            {
-                int delay = CharacterDelayMs;
-                if (Humanize && JitterPercent != 0)
-                {
-                    int jitter = delay * JitterPercent / 100;
-                    delay = NextRange(random, Math.Max(0, delay - jitter), delay + jitter);
-                }
-                total += delay;
-                if (Humanize && random.Next(100) < 5)
-                    total += random.Next(80, 241);
-            }
-            total += Humanize ? NextRange(random, SubmitDelayMinMs, SubmitDelayMaxMs) : SubmitDelayMinMs;
-            return total;
+            return CreateTimingPlan(text, random).PlannedTotalMs;
         }
 
         internal void Normalize()
         {
-            StartDelayMinMs = Clamp(StartDelayMinMs, 0, 5000);
-            StartDelayMaxMs = Clamp(StartDelayMaxMs, StartDelayMinMs, 5000);
-            CharacterDelayMs = Clamp(CharacterDelayMs, 0, 500);
-            JitterPercent = Clamp(JitterPercent, 0, 80);
-            SubmitDelayMinMs = Clamp(SubmitDelayMinMs, 0, 2000);
-            SubmitDelayMaxMs = Clamp(SubmitDelayMaxMs, SubmitDelayMinMs, 2000);
-            TypingSubmitMinimumMs = Clamp(TypingSubmitMinimumMs, 0, 10000);
-            TypingSubmitBudgetMs = Clamp(TypingSubmitBudgetMs,
-                Math.Max(250, TypingSubmitMinimumMs), 10000);
+            if (!IsMode(TimingMode)) TimingMode = HumanMode;
+            TimingMode = TimingMode.ToLowerInvariant();
+            CustomReactionDelayMs = Clamp(CustomReactionDelayMs, 0, 5000);
+            CustomCharacterDelayMs = Clamp(CustomCharacterDelayMs, 0, 1000);
+            CustomSubmitDelayMs = Clamp(CustomSubmitDelayMs, 0, 5000);
+            CustomTotalMinimumMs = Clamp(CustomTotalMinimumMs, 0, 10000);
+            CustomTotalMaximumMs = Clamp(CustomTotalMaximumMs,
+                Math.Max(100, CustomTotalMinimumMs), 10000);
+            CustomJitterPercent = Clamp(CustomJitterPercent, 0, 80);
+        }
+
+        private static void MigrateLegacy(IDictionary<string, string> entries, KeyboundActSettings value)
+        {
+            bool humanize = ReadBool(entries, "Humanize", true);
+            bool blatant = ReadBool(entries, "BlatantMode", false);
+            value.TimingMode = blatant ? WarriorMode : humanize ? HumanMode : CustomMode;
+            int reactionMin = ReadInt(entries, "StartDelayMinMs", value.CustomReactionDelayMs, 0, 5000);
+            int reactionMax = ReadInt(entries, "StartDelayMaxMs", reactionMin, 0, 5000);
+            int submitMin = ReadInt(entries, "SubmitDelayMinMs", value.CustomSubmitDelayMs, 0, 5000);
+            int submitMax = ReadInt(entries, "SubmitDelayMaxMs", submitMin, 0, 5000);
+            value.CustomReactionDelayMs = (reactionMin + Math.Max(reactionMin, reactionMax)) / 2;
+            value.CustomCharacterDelayMs = ReadInt(entries, "CharacterDelayMs",
+                value.CustomCharacterDelayMs, 0, 1000);
+            value.CustomSubmitDelayMs = (submitMin + Math.Max(submitMin, submitMax)) / 2;
+            value.CustomTotalMinimumMs = ReadInt(entries, "TypingSubmitMinimumMs",
+                value.CustomTotalMinimumMs, 0, 10000);
+            value.CustomTotalMaximumMs = ReadInt(entries, "TypingSubmitBudgetMs",
+                value.CustomTotalMaximumMs, 100, 10000);
+            value.CustomJitterPercent = ReadInt(entries, "JitterPercent",
+                value.CustomJitterPercent, 0, 80);
+        }
+
+        private static KeyboundTimingProfile Profile(string mode, int reaction, int character,
+            int submit, int minimum, int maximum, int jitter)
+        {
+            return new KeyboundTimingProfile
+            {
+                Mode = mode,
+                ReactionDelayMs = reaction,
+                CharacterDelayMs = character,
+                SubmitDelayMs = submit,
+                TotalMinimumMs = minimum,
+                TotalMaximumMs = maximum,
+                JitterPercent = jitter
+            };
+        }
+
+        private static int WithJitter(int value, int percent, Random random)
+        {
+            if (value <= 0 || percent <= 0 || random == null) return Math.Max(0, value);
+            int delta = value * percent / 100;
+            return NextRange(random, Math.Max(0, value - delta), value + delta);
+        }
+
+        private static void ScaleToMaximum(KeyboundTimingPlan plan, int total)
+        {
+            if (total <= 0) return;
+            double scale = plan.TotalMaximumMs / (double)total;
+            plan.ReactionDelayMs = (int)Math.Floor(plan.ReactionDelayMs * scale);
+            plan.SubmitDelayMs = (int)Math.Floor(plan.SubmitDelayMs * scale);
+            for (int index = 0; index < plan.CharacterDelaysMs.Length; index++)
+                plan.CharacterDelaysMs[index] = (int)Math.Floor(
+                    plan.CharacterDelaysMs[index] * scale);
+            plan.SubmitDelayMs += Math.Max(0, plan.TotalMaximumMs - plan.PlannedTotalMs);
+        }
+
+        private static bool IsMode(string mode)
+        {
+            return String.Equals(mode, HumanMode, StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(mode, WarriorMode, StringComparison.OrdinalIgnoreCase) ||
+                String.Equals(mode, CustomMode, StringComparison.OrdinalIgnoreCase);
         }
 
         private static int NextRange(Random random, int minimum, int maximum)
@@ -132,7 +244,8 @@ namespace ActEnhanced.KeyboundProbe
             return entries.TryGetValue(key, out raw) && Boolean.TryParse(raw, out value) ? value : fallback;
         }
 
-        private static int ReadInt(IDictionary<string, string> entries, string key, int fallback, int minimum, int maximum)
+        private static int ReadInt(IDictionary<string, string> entries, string key, int fallback,
+            int minimum, int maximum)
         {
             string raw;
             int value;
