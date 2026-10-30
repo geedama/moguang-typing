@@ -22,7 +22,7 @@ trap {
 function Select-ActRoot([string]$InitialPath) {
     Add-Type -AssemblyName System.Windows.Forms
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = '请选择呆萌 ACT 根目录（里面应有 Advanced Combat Tracker.exe）'
+    $dialog.Description = '请选择 ACT 根目录（支持原生 ACT、ACT 国服整合和呆萌 ACT）'
     $dialog.ShowNewFolderButton = $false
     if (-not [string]::IsNullOrWhiteSpace($InitialPath) -and (Test-Path -LiteralPath $InitialPath)) {
         $dialog.SelectedPath = $InitialPath
@@ -33,16 +33,52 @@ function Select-ActRoot([string]$InitialPath) {
     return $dialog.SelectedPath
 }
 
-function Assert-ActRoot([string]$Path) {
-    $required = @(
-        (Join-Path $Path 'Advanced Combat Tracker.exe'),
-        (Join-Path $Path 'DLibs\Advanced Combat Tracker.dll'),
-        (Join-Path $Path 'Config\Advanced Combat Tracker.config.xml')
+function Resolve-ActLayout([string]$Path) {
+    $actExe = Join-Path $Path 'Advanced Combat Tracker.exe'
+    $cafeExe = Join-Path $Path 'CafeACT.exe'
+    $hostType = $null
+    $configCandidates = @()
+    if ((Test-Path -LiteralPath $cafeExe) -and
+        (Test-Path -LiteralPath (Join-Path $Path 'Advanced Combat Tracker.dll'))) {
+        $hostType = 'ACT 国服整合'
+        $configCandidates = @(
+            (Join-Path $Path 'AppData\Advanced Combat Tracker\Config\CafeACT.config.xml'),
+            (Join-Path $Path 'AppData\Advanced Combat Tracker\Config\Advanced Combat Tracker.config.xml')
+        )
+    }
+    elseif ((Test-Path -LiteralPath $actExe) -and
+        (Test-Path -LiteralPath (Join-Path $Path 'DLibs\Advanced Combat Tracker.dll'))) {
+        $hostType = '呆萌 ACT'
+        $configCandidates = @((Join-Path $Path 'Config\Advanced Combat Tracker.config.xml'))
+    }
+    elseif (Test-Path -LiteralPath $actExe) {
+        $hostType = 'ACT 原生版'
+        $configCandidates = @(
+            (Join-Path $Path 'Config\Advanced Combat Tracker.config.xml'),
+            (Join-Path $env:APPDATA 'Advanced Combat Tracker\Config\Advanced Combat Tracker.config.xml')
+        )
+    }
+    else {
+        throw '所选目录不是受支持的 ACT 根目录；应包含 Advanced Combat Tracker.exe 或 CafeACT.exe。'
+    }
+
+    $actConfig = @($configCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+    if ($actConfig.Count -eq 0) {
+        throw "$hostType 尚未生成 ACT 配置。请先启动一次 ACT，正常退出后再安装。"
+    }
+    $actConfig = $actConfig[0]
+    $configDirectory = Split-Path -Parent $actConfig
+    $overlayCandidates = @(
+        (Join-Path $configDirectory 'RainbowMage.OverlayPlugin.config.json'),
+        (Join-Path $Path 'Config\RainbowMage.OverlayPlugin.config.json'),
+        (Join-Path $Path 'AppData\Advanced Combat Tracker\Config\RainbowMage.OverlayPlugin.config.json')
     )
-    foreach ($item in $required) {
-        if (-not (Test-Path -LiteralPath $item)) {
-            throw "所选目录不是完整的呆萌 ACT 根目录，缺少：$item"
-        }
+    $overlayConfig = @($overlayCandidates | Select-Object -Unique |
+        Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+    [PSCustomObject]@{
+        HostType = $hostType
+        ActConfig = $actConfig
+        OverlayConfig = if ($overlayConfig.Count -eq 0) { $null } else { $overlayConfig[0] }
     }
 }
 
@@ -54,26 +90,26 @@ function Backup-Config([string]$Path, [string]$BackupDirectory) {
     Copy-Item -LiteralPath $Path -Destination (Join-Path $BackupDirectory "$name.$stamp.bak") -Force
 }
 
-function Enable-ActPlugin([string]$ConfigPath) {
+function Enable-ActPlugin([string]$ConfigPath, [string]$PluginPath) {
     $document = New-Object System.Xml.XmlDocument
     $document.PreserveWhitespace = $true
     $document.Load($ConfigPath)
     $container = $document.SelectSingleNode('/Config/ActPlugins')
     if ($null -eq $container) { throw 'ACT 配置中缺少 /Config/ActPlugins 节点。' }
-    $relativePath = 'Plugins\KeyboundProbe\KeyboundProbe.ActPlugin.dll'
+    $fullPluginPath = [IO.Path]::GetFullPath($PluginPath)
     $plugin = $null
     foreach ($candidate in @($container.SelectNodes('Plugin'))) {
-        if ([string]::Equals($candidate.GetAttribute('Path'), $relativePath,
-                [StringComparison]::OrdinalIgnoreCase)) {
+        $candidatePath = $candidate.GetAttribute('Path')
+        if ($candidatePath -match '(?i)(^|[\\/])KeyboundProbe[\\/]KeyboundProbe\.ActPlugin\.dll$') {
             $plugin = $candidate
             break
         }
     }
     if ($null -eq $plugin) {
         $plugin = $document.CreateElement('Plugin')
-        $plugin.SetAttribute('Path', $relativePath)
         [void]$container.AppendChild($plugin)
     }
+    $plugin.SetAttribute('Path', $fullPluginPath)
     $plugin.SetAttribute('Enabled', 'True')
     $document.Save($ConfigPath)
 }
@@ -161,14 +197,18 @@ if (-not (Test-Path -LiteralPath (Join-Path $payload 'KeyboundProbe.ActPlugin.dl
     throw '安装包不完整：缺少 Plugin\KeyboundProbe.ActPlugin.dll。请重新解压完整 ZIP。'
 }
 if ([string]::IsNullOrWhiteSpace($ActRoot)) {
-    $ActRoot = Select-ActRoot $env:DIEMOE_ACT_ROOT
+    $initialRoot = if (-not [string]::IsNullOrWhiteSpace($env:MOGUANG_ACT_ROOT)) {
+        $env:MOGUANG_ACT_ROOT
+    } else { $env:DIEMOE_ACT_ROOT }
+    $ActRoot = Select-ActRoot $initialRoot
 }
 $ActRoot = (Resolve-Path -LiteralPath $ActRoot).Path
-Assert-ActRoot $ActRoot
+$layout = Resolve-ActLayout $ActRoot
 
 $actRootPrefix = $ActRoot.TrimEnd('\') + '\'
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-    if ($_.ProcessName -ne 'Advanced Combat Tracker' -and $_.ProcessName -ne 'ACT.DieMoe.Launcher') {
+    if ($_.ProcessName -ne 'Advanced Combat Tracker' -and $_.ProcessName -ne 'ACT.DieMoe.Launcher' -and
+        $_.ProcessName -ne 'CafeACT') {
         return $false
     }
     try { return $_.Path.StartsWith($actRootPrefix, [StringComparison]::OrdinalIgnoreCase) }
@@ -179,11 +219,11 @@ if ($running.Count -ne 0) {
 }
 
 $pluginDirectory = Join-Path $ActRoot 'Plugins\KeyboundProbe'
-$backupDirectory = Join-Path $ActRoot 'Config\KeyboundProbe.Backups'
-$actConfig = Join-Path $ActRoot 'Config\Advanced Combat Tracker.config.xml'
-$overlayConfig = Join-Path $ActRoot 'Config\RainbowMage.OverlayPlugin.config.json'
+$backupDirectory = Join-Path (Split-Path -Parent $layout.ActConfig) 'KeyboundProbe.Backups'
+$actConfig = $layout.ActConfig
+$overlayConfig = $layout.OverlayConfig
 Backup-Config $actConfig $backupDirectory
-Backup-Config $overlayConfig $backupDirectory
+if ($null -ne $overlayConfig) { Backup-Config $overlayConfig $backupDirectory }
 
 New-Item -ItemType Directory -Path $pluginDirectory -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $payload 'KeyboundProbe.ActPlugin.dll') -Destination $pluginDirectory -Force
@@ -199,14 +239,20 @@ foreach ($name in @('index.html', 'overlay.css', 'overlay.js')) {
 }
 Get-ChildItem -LiteralPath $pluginDirectory -File -Recurse | Unblock-File -ErrorAction SilentlyContinue
 
-Enable-ActPlugin $actConfig
-$overlayInstalled = Register-Overlay $overlayConfig (Join-Path $overlayTarget 'index.html')
+$pluginPath = Join-Path $pluginDirectory 'KeyboundProbe.ActPlugin.dll'
+Enable-ActPlugin $actConfig $pluginPath
+$overlayInstalled = if ($null -eq $overlayConfig) {
+    Write-Warning '未找到 OverlayPlugin 配置；ACT 插件仍已安装，悬浮窗需要稍后手动添加。'
+    $false
+} else { Register-Overlay $overlayConfig (Join-Path $overlayTarget 'index.html') }
 
 $version = [Diagnostics.FileVersionInfo]::GetVersionInfo(
     (Join-Path $pluginDirectory 'KeyboundProbe.ActPlugin.dll')).FileVersion
 Write-Host ''
 Write-Host "安装完成：魔光打字通 $version" -ForegroundColor Green
+Write-Host "ACT 类型：$($layout.HostType)"
 Write-Host "ACT 目录：$ActRoot"
+Write-Host "ACT 配置：$actConfig"
 Write-Host "插件目录：$pluginDirectory"
 Write-Host "悬浮窗：$(if ($overlayInstalled) { '已注册' } else { '未自动注册，请查看 README' })"
 Write-Host '现在可启动 ACT；进入游戏后在插件页或悬浮窗中开启自动攻击。'

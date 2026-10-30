@@ -2,10 +2,10 @@
 =====================
 
 安装：
-1. 完全关闭 ACT 和呆萌启动器。
+1. 完全关闭所有 ACT 和相关启动器。
 2. 解压整个 ZIP。
-3. 双击“安装到呆萌ACT.cmd”。
-4. 选择包含“Advanced Combat Tracker.exe”的呆萌 ACT 根目录。
+3. 双击“安装到ACT.cmd”。
+4. 原生版/呆萌 ACT 选择包含“Advanced Combat Tracker.exe”的目录；ACT 国服整合选择包含“CafeACT.exe”的目录。
 5. 启动 ACT，确认 KeyboundProbe.ActPlugin.dll 已加载。
 
 使用：

@@ -10,7 +10,7 @@ $artifacts = Join-Path $source 'artifacts'
 $versionPath = Join-Path $workspaceRoot 'VERSION'
 $compiler = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $actAssembly = if ([string]::IsNullOrWhiteSpace($ActAssemblyPath)) {
-    Join-Path $workspaceRoot 'NewMoe-Technology\ACT.DieMoe\DLibs\Advanced Combat Tracker.dll'
+    Join-Path $workspaceRoot 'act-cnzhenghe\Advanced Combat Tracker.dll'
 } else {
     $ActAssemblyPath
 }
@@ -70,3 +70,4 @@ if ($LASTEXITCODE -ne 0) { throw 'KeyboundProbe plugin build failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'KeyboundProbe tests build failed.' }
 
 Write-Host "魔光打字通 build complete: $artifacts (version $version)"
+Write-Host "ACT API reference: $actAssembly"

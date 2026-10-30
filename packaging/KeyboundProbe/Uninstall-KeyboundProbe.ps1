@@ -21,7 +21,7 @@ trap {
 function Select-ActRoot([string]$InitialPath) {
     Add-Type -AssemblyName System.Windows.Forms
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dialog.Description = '请选择已安装魔光打字通的呆萌 ACT 根目录'
+    $dialog.Description = '请选择已安装魔光打字通的 ACT 根目录'
     $dialog.ShowNewFolderButton = $false
     if (-not [string]::IsNullOrWhiteSpace($InitialPath) -and (Test-Path -LiteralPath $InitialPath)) {
         $dialog.SelectedPath = $InitialPath
@@ -30,13 +30,52 @@ function Select-ActRoot([string]$InitialPath) {
     return $dialog.SelectedPath
 }
 
-if ([string]::IsNullOrWhiteSpace($ActRoot)) { $ActRoot = Select-ActRoot $env:DIEMOE_ACT_ROOT }
+function Resolve-ActLayout([string]$Path) {
+    $actExe = Join-Path $Path 'Advanced Combat Tracker.exe'
+    $cafeExe = Join-Path $Path 'CafeACT.exe'
+    if ((Test-Path -LiteralPath $cafeExe) -and
+        (Test-Path -LiteralPath (Join-Path $Path 'Advanced Combat Tracker.dll'))) {
+        $configCandidates = @(
+            (Join-Path $Path 'AppData\Advanced Combat Tracker\Config\CafeACT.config.xml'),
+            (Join-Path $Path 'AppData\Advanced Combat Tracker\Config\Advanced Combat Tracker.config.xml')
+        )
+    }
+    elseif (Test-Path -LiteralPath $actExe) {
+        $configCandidates = @(
+            (Join-Path $Path 'Config\Advanced Combat Tracker.config.xml'),
+            (Join-Path $env:APPDATA 'Advanced Combat Tracker\Config\Advanced Combat Tracker.config.xml')
+        )
+    }
+    else { throw '所选目录不是受支持的 ACT 根目录。' }
+    $actConfig = @($configCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+    if ($actConfig.Count -eq 0) { throw '没有找到该 ACT 使用的配置文件。' }
+    $actConfig = $actConfig[0]
+    $configDirectory = Split-Path -Parent $actConfig
+    $overlayCandidates = @(
+        (Join-Path $configDirectory 'RainbowMage.OverlayPlugin.config.json'),
+        (Join-Path $Path 'Config\RainbowMage.OverlayPlugin.config.json'),
+        (Join-Path $Path 'AppData\Advanced Combat Tracker\Config\RainbowMage.OverlayPlugin.config.json')
+    )
+    $overlayConfig = @($overlayCandidates | Select-Object -Unique |
+        Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+    [PSCustomObject]@{
+        ActConfig = $actConfig
+        OverlayConfig = if ($overlayConfig.Count -eq 0) { $null } else { $overlayConfig[0] }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($ActRoot)) {
+    $initialRoot = if (-not [string]::IsNullOrWhiteSpace($env:MOGUANG_ACT_ROOT)) {
+        $env:MOGUANG_ACT_ROOT
+    } else { $env:DIEMOE_ACT_ROOT }
+    $ActRoot = Select-ActRoot $initialRoot
+}
 $ActRoot = (Resolve-Path -LiteralPath $ActRoot).Path
-$actExe = Join-Path $ActRoot 'Advanced Combat Tracker.exe'
-if (-not (Test-Path -LiteralPath $actExe)) { throw '所选目录不是呆萌 ACT 根目录。' }
+$layout = Resolve-ActLayout $ActRoot
 $actRootPrefix = $ActRoot.TrimEnd('\') + '\'
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-    if ($_.ProcessName -ne 'Advanced Combat Tracker' -and $_.ProcessName -ne 'ACT.DieMoe.Launcher') {
+    if ($_.ProcessName -ne 'Advanced Combat Tracker' -and $_.ProcessName -ne 'ACT.DieMoe.Launcher' -and
+        $_.ProcessName -ne 'CafeACT') {
         return $false
     }
     try { return $_.Path.StartsWith($actRootPrefix, [StringComparison]::OrdinalIgnoreCase) }
@@ -44,24 +83,23 @@ $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
 })
 if ($running.Count -ne 0) { throw '请先关闭所有 ACT/呆萌启动器实例再卸载。' }
 
-$actConfig = Join-Path $ActRoot 'Config\Advanced Combat Tracker.config.xml'
+$actConfig = $layout.ActConfig
 if (Test-Path -LiteralPath $actConfig) {
     Copy-Item -LiteralPath $actConfig -Destination ($actConfig + '.keyboundprobe-uninstall.bak') -Force
     $document = New-Object System.Xml.XmlDocument
     $document.PreserveWhitespace = $true
     $document.Load($actConfig)
     foreach ($plugin in @($document.SelectNodes('/Config/ActPlugins/Plugin'))) {
-        if ([string]::Equals($plugin.GetAttribute('Path'),
-                'Plugins\KeyboundProbe\KeyboundProbe.ActPlugin.dll',
-                [StringComparison]::OrdinalIgnoreCase)) {
+        if ($plugin.GetAttribute('Path') -match
+            '(?i)(^|[\\/])KeyboundProbe[\\/]KeyboundProbe\.ActPlugin\.dll$') {
             [void]$plugin.ParentNode.RemoveChild($plugin)
         }
     }
     $document.Save($actConfig)
 }
 
-$overlayConfig = Join-Path $ActRoot 'Config\RainbowMage.OverlayPlugin.config.json'
-if (Test-Path -LiteralPath $overlayConfig) {
+$overlayConfig = $layout.OverlayConfig
+if ($null -ne $overlayConfig -and (Test-Path -LiteralPath $overlayConfig)) {
     Copy-Item -LiteralPath $overlayConfig -Destination ($overlayConfig + '.keyboundprobe-uninstall.bak') -Force
     $raw = [IO.File]::ReadAllText($overlayConfig)
     $pattern = '(?s)\{[^{}]*"Name"\s*:\s*"(?:魔光打字通|魔光键影调试)"[^{}]*\}'

@@ -71,7 +71,7 @@ Copy-Item -LiteralPath (Join-Path $packaging 'KeyboundProbe.settings.ini') -Dest
 foreach ($name in @('index.html', 'overlay.css', 'overlay.js')) {
     Copy-Item -LiteralPath (Join-Path $workspaceRoot "src\KeyboundProbe\overlay\$name") -Destination $overlayStage
 }
-foreach ($name in @('README.md', '使用说明.txt', '安装到呆萌ACT.cmd', '卸载.cmd',
+foreach ($name in @('README.md', '使用说明.txt', '安装到ACT.cmd', '安装到呆萌ACT.cmd', '卸载.cmd',
         'Install-KeyboundProbe.ps1', 'Uninstall-KeyboundProbe.ps1')) {
     Copy-Item -LiteralPath (Join-Path $packaging $name) -Destination $stage
 }
@@ -104,7 +104,7 @@ try {
         "$packageName/LICENSE",
         "$packageName/VERSION",
         "$packageName/使用说明.txt",
-        "$packageName/安装到呆萌ACT.cmd",
+        "$packageName/安装到ACT.cmd",
         "$packageName/Plugin/KeyboundProbe.ActPlugin.dll",
         "$packageName/Plugin/overlay/index.html"
     )) {

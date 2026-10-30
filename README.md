@@ -1,6 +1,6 @@
 # 魔光打字通
 
-用于《最终幻想 XIV》金碟游乐场“魔光键影”的呆萌 ACT 插件。
+用于《最终幻想 XIV》金碟游乐场“魔光键影”的 ACT 插件，支持 ACT 原生版、ACT 国服整合和呆萌 ACT。
 
 插件读取游戏当前显示的中文题目，选择目标并完成输入。P1、P2 和 P3 的部分怪物机制也会参与目标排序和停手判断。
 
@@ -10,13 +10,15 @@
 
 普通用户请前往 [最新版本下载页](https://github.com/geedama/moguang-typing/releases/latest)，在页面下方的 **Assets** 中下载 `MoguangTyping-版本号.zip`。不要使用 `Code → Download ZIP`，那是源码包，不能直接安装。
 
-下载后完整解压，并在关闭 ACT 和呆萌启动器的情况下运行 `安装到呆萌ACT.cmd`。
+下载后完整解压，并在关闭所有 ACT 实例的情况下运行 `安装到ACT.cmd`。
 
-安装器会要求选择呆萌 ACT 根目录，即包含 `Advanced Combat Tracker.exe`、`DLibs` 和 `Config` 的目录。安装完成后启动 ACT，在插件列表中确认 `KeyboundProbe.ActPlugin.dll` 已加载。
+安装器会自动识别所选目录中的 ACT 类型及其配置位置。原生版、呆萌 ACT 请选择包含 `Advanced Combat Tracker.exe` 的目录；ACT 国服整合请选择包含 `CafeACT.exe` 的目录。安装完成后启动 ACT，在插件列表中确认 `KeyboundProbe.ActPlugin.dll` 已加载。
+
+同一个发布包可用于三种 ACT。发布 DLL 以国服整合所用的旧版 ACT API 为兼容基线，并已在隔离的 ACT 原生版、ACT 国服整合和呆萌 ACT 文件副本中完成安装与加载测试。
 
 `KeyboundProbe` 是插件早期使用的内部名称。为兼容旧设置，DLL、插件目录和配置文件仍沿用这个名称。
 
-本插件不依赖 Dalamud。悬浮窗需要呆萌整合中的 OverlayPlugin/ngld；不使用悬浮窗时不影响 ACT 插件本体工作。
+本插件不依赖 Dalamud。悬浮窗需要对应 ACT 已安装 OverlayPlugin/ngld；不使用悬浮窗时不影响插件本体工作。
 
 ## 使用
 
@@ -45,7 +47,7 @@
 
 ## 从源码构建
 
-构建环境：Windows PowerShell、.NET Framework 4.x C# 编译器，以及本机 ACT 的 `Advanced Combat Tracker.dll`。
+构建环境：Windows PowerShell、.NET Framework 4.x C# 编译器，以及 ACT 程序集。为兼容旧版 ACT，发布构建优先使用 ACT 国服整合中的旧版 `Advanced Combat Tracker.dll`；也可显式指定程序集路径。
 
 ```powershell
 ./scripts/build-keybound-probe.ps1 -ActAssemblyPath 'D:\ACT\DLibs\Advanced Combat Tracker.dll'
