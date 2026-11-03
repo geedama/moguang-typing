@@ -13,6 +13,8 @@
 !/docs/keybound-combat-priority.md
 !/docs/RELEASING.md
 !/docs/LICENSE-OPTIONS.md
+!/docs/ce-afk-probe.md
+!/docs/afk-guard.md
 
 !/src/
 /src/*
@@ -31,6 +33,7 @@
 !/scripts/test-keybound-package.ps1
 !/scripts/export-keybound-words.ps1
 !/scripts/analyze-keybound-combat.ps1
+!/scripts/ce-keybound-afk-probe.lua
 
 !/tools/
 /tools/*

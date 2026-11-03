@@ -43,7 +43,10 @@ $pluginSources = @(
     (Join-Path $source 'KeyboundCombatLogParser.cs'),
     (Join-Path $source 'KeyboundDecoder.cs'),
     (Join-Path $source 'KtgProcessMemoryReader.cs'),
+    (Join-Path $source 'KeyboundAfkGuard.cs'),
     (Join-Path $source 'KeyboundActSettings.cs'),
+    (Join-Path $source 'KeyboundModeHotkeys.cs'),
+    (Join-Path $source 'KeyboundSingleRun.cs'),
     (Join-Path $source 'GameInputSender.cs'),
     (Join-Path $source 'KeyboundOverlayServer.cs'),
     (Join-Path $source 'KeyboundProbePlugin.cs'),
@@ -61,11 +64,15 @@ if ($LASTEXITCODE -ne 0) { throw 'KeyboundProbe plugin build failed.' }
     "/out:$artifacts\KeyboundProbe.Tests.exe" `
     /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll `
     $core (Join-Path $source 'KeyboundDecoder.cs') (Join-Path $source 'KtgProcessMemoryReader.cs') `
+    (Join-Path $source 'KeyboundAfkGuard.cs') `
     (Join-Path $source 'KeyboundCombatLogParser.cs') `
     (Join-Path $source 'KeyboundBridgeClient.cs') `
     (Join-Path $source 'KeyboundActSettings.cs') `
+    (Join-Path $source 'KeyboundModeHotkeys.cs') `
+    (Join-Path $source 'KeyboundSingleRun.cs') `
     (Join-Path $source 'DalamudAutoLauncher.cs') (Join-Path $source 'GameInputSender.cs') `
     (Join-Path $source 'KeyboundOverlayServer.cs') `
+    (Join-Path $source 'KeyboundAfkGuard.Tests.cs') `
     (Join-Path $source 'KeyboundProbe.Tests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'KeyboundProbe tests build failed.' }
 

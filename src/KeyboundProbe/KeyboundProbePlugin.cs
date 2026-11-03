@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using System.Windows.Forms;
 using Advanced_Combat_Tracker;
 
@@ -27,6 +28,10 @@ namespace ActEnhanced.KeyboundProbe
         private KeyboundWordTable wordTable;
         private Label decoderStatusLabel;
         private Label memoryStatusLabel;
+        private Label afkGuardStatusLabel;
+        private int afkGuardEnabled;
+        private string lastAfkGuardState;
+        private DateTime lastAfkGuardLogUtc;
         private Label overlayStatusLabel;
         private Label scoreLabel;
         private Label phaseLabel;
@@ -54,6 +59,11 @@ namespace ActEnhanced.KeyboundProbe
         private KeyboundActSettings automationSettings;
         private string automationSettingsPath;
         private ComboBox autoTimingMode;
+        private Button humanHotkeyButton;
+        private Button warriorHotkeyButton;
+        private Button customHotkeyButton;
+        private Label modeHotkeyStatus;
+        private KeyboundModeHotkeyManager modeHotkeys;
         private NumericUpDown autoReactionDelay;
         private NumericUpDown autoCharacterDelay;
         private NumericUpDown autoJitterPercent;
@@ -75,6 +85,16 @@ namespace ActEnhanced.KeyboundProbe
 #endif
         private KtgProcessMemoryReader memoryReader;
         private int memoryPollBusy;
+        private readonly KeyboundSingleRun singleRun = new KeyboundSingleRun();
+        private Label singleRunStatus;
+        private Button singleRunStart;
+        private NumericUpDown automationRunCount;
+        private int singleRunGeneration;
+        private int singleRunBusy;
+        private string lastSingleRunStatus;
+        private bool singleRunStartedCapture;
+        private string lastProbeAddonSignature = String.Empty;
+        private string lastProbeObjectSignature = String.Empty;
         private readonly Dictionary<uint, KtgMemoryTarget> memoryTargets =
             new Dictionary<uint, KtgMemoryTarget>();
         private readonly DirectPromptCompletionTracker directCompletedPrompts =
@@ -92,7 +112,6 @@ namespace ActEnhanced.KeyboundProbe
         private bool directMemoryAcknowledgementMode;
         private DateTime directConfirmationDeadlineUtc;
         private DateTime directRetryAfterUtc;
-        private DateTime nextPhysicalPinyinUtc = DateTime.MaxValue;
         private bool keyboundAddonPresent;
         private string automationDiagnosticPath;
         private readonly object automationDiagnosticLock = new object();
@@ -149,7 +168,8 @@ namespace ActEnhanced.KeyboundProbe
             });
 
             connectionLabel = AddLabel(root, "FFXIV_ACT_Plugin：正在连接…");
-            memoryStatusLabel = AddLabel(root, "ACT 只读内存：等待 FF14 进程");
+            memoryStatusLabel = AddLabel(root, "ACT 内存读取：等待 FF14 进程");
+            afkGuardStatusLabel = AddLabel(root, "防闲置：等待小游戏");
             overlayStatusLabel = AddLabel(root, "ngld 悬浮窗：正在启动本地状态服务…");
             decoderStatusLabel = AddLabel(root, "KTGEWord：等待游戏 UI；网络事件仅用于成功/死亡诊断。");
             scoreLabel = AddLabel(root, "分数：—");
@@ -166,11 +186,11 @@ namespace ActEnhanced.KeyboundProbe
             };
             autoInputEnabled.CheckedChanged += delegate
             {
+                System.Threading.Interlocked.Exchange(ref afkGuardEnabled, autoInputEnabled.Checked ? 1 : 0);
+                if (!autoInputEnabled.Checked && singleRun.InCombat)
+                    StopSingleRun("自动攻击已关闭，连续流程停止");
                 System.Threading.Interlocked.Increment(ref directInputGeneration);
                 ResetDirectAutomation(!autoInputEnabled.Checked);
-                nextPhysicalPinyinUtc = autoInputEnabled.Checked
-                    ? DateTime.UtcNow.AddMilliseconds(NextPhysicalPinyinInterval())
-                    : DateTime.MaxValue;
                 autoInputStatus.Text = autoInputEnabled.Checked
                     ? "自动输入：已启用；请保持 FF14 在前台"
                     : "自动输入：已停用";
@@ -180,10 +200,27 @@ namespace ActEnhanced.KeyboundProbe
             autoControls.Controls.Add(autoInputEnabled);
             AddButton(autoControls, "立即停用", delegate
             {
+                StopSingleRun("已紧急中断连续流程");
                 autoInputEnabled.Checked = false;
                 autoInputStatus.Text = "自动输入：已紧急停用";
             });
             root.Controls.Add(autoControls);
+
+            var flowControls = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
+            flowControls.Controls.Add(new Label { AutoSize = true, Text = "连续刷（测试）", Margin = new Padding(3, 7, 3, 0) });
+            automationRunCount = new NumericUpDown { Minimum = 1, Maximum = KeyboundSingleRun.MaximumRuns,
+                Width = 65, Value = automationSettings.AutomationRunCount };
+            automationRunCount.ValueChanged += delegate
+            {
+                automationSettings.AutomationRunCount = (int)automationRunCount.Value;
+                SaveAutomationSettings();
+            };
+            flowControls.Controls.Add(automationRunCount);
+            flowControls.Controls.Add(new Label { AutoSize = true, Text = "局", Margin = new Padding(3, 7, 3, 0) });
+            singleRunStart = AddButton(flowControls, "开始连续流程", delegate { StartSingleRun(); });
+            AddButton(flowControls, "中断连续流程", delegate { StopSingleRun("已手动中断连续流程"); });
+            root.Controls.Add(flowControls);
+            singleRunStatus = AddLabel(root, "连续流程：未启动；靠近报名登记员，F12 选中最近 NPC、小键盘 0 交互（默认绑定）。");
 
             var modeControls = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
             modeControls.Controls.Add(new Label { AutoSize = true, Text = "攻击参数" });
@@ -197,6 +234,17 @@ namespace ActEnhanced.KeyboundProbe
                 Text = "拟人和光之战士使用固定参数；选择自定义后可编辑下方数值。"
             });
             root.Controls.Add(modeControls);
+
+            var hotkeyControls = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
+            hotkeyControls.Controls.Add(new Label { AutoSize = true, Text = "模式热键" });
+            humanHotkeyButton = AddButton(hotkeyControls, String.Empty,
+                delegate { CaptureModeHotkey(KeyboundActSettings.HumanMode); });
+            warriorHotkeyButton = AddButton(hotkeyControls, String.Empty,
+                delegate { CaptureModeHotkey(KeyboundActSettings.WarriorMode); });
+            customHotkeyButton = AddButton(hotkeyControls, String.Empty,
+                delegate { CaptureModeHotkey(KeyboundActSettings.CustomMode); });
+            root.Controls.Add(hotkeyControls);
+            modeHotkeyStatus = AddLabel(root, "模式热键：正在注册…");
 
             var rhythmControls = new FlowLayoutPanel
             {
@@ -229,10 +277,7 @@ namespace ActEnhanced.KeyboundProbe
             autoTimingMode.SelectedIndexChanged += delegate
             {
                 if (updatingTimingControls) return;
-                automationSettings.TimingMode = TimingModeName(autoTimingMode.SelectedIndex);
-                automationSettings.Normalize();
-                ApplyTimingControls();
-                SaveAutomationSettings();
+                SetTimingMode(TimingModeName(autoTimingMode.SelectedIndex), "ACT界面");
             };
             autoReactionDelay.ValueChanged += saveRhythm;
             autoCharacterDelay.ValueChanged += saveRhythm;
@@ -242,6 +287,7 @@ namespace ActEnhanced.KeyboundProbe
             autoTotalMaximum.ValueChanged += saveRhythm;
             ApplyTimingControls();
             SaveAutomationSettings();
+            InitializeModeHotkeys();
             autoInputStatus = AddLabel(root, "自动输入：已停用");
             root.Controls.Add(new Label
             {
@@ -304,6 +350,7 @@ namespace ActEnhanced.KeyboundProbe
             memoryReader = new KtgProcessMemoryReader();
             overlayServer = new KeyboundOverlayServer(overlayDirectory);
             overlayServer.AutomationRequested += OnOverlayAutomationRequested;
+            overlayServer.FlowStopRequested += OnOverlayFlowStopRequested;
             overlayStatusLabel.Text = String.IsNullOrEmpty(overlayServer.Error)
                 ? "ngld 悬浮窗：本地状态服务 127.0.0.1:" + overlayServer.Port
                 : "ngld 悬浮窗：启动失败；" + overlayServer.Error;
@@ -316,6 +363,8 @@ namespace ActEnhanced.KeyboundProbe
 
         public void DeInitPlugin()
         {
+            System.Threading.Interlocked.Increment(ref singleRunGeneration);
+            singleRun.Stop("插件已卸载");
             WriteAutomationDiagnostic("PLUGIN_DEINIT", 0, String.Empty, "stopping");
             if (autoInputEnabled != null)
                 autoInputEnabled.Checked = false;
@@ -326,6 +375,12 @@ namespace ActEnhanced.KeyboundProbe
                 uiTimer.Dispose();
                 uiTimer = null;
             }
+            if (modeHotkeys != null)
+            {
+                modeHotkeys.ModeRequested -= OnModeHotkeyRequested;
+                modeHotkeys.Dispose();
+                modeHotkeys = null;
+            }
             if (memoryReader != null)
             {
                 memoryReader.Dispose();
@@ -334,6 +389,7 @@ namespace ActEnhanced.KeyboundProbe
             if (overlayServer != null)
             {
                 overlayServer.AutomationRequested -= OnOverlayAutomationRequested;
+                overlayServer.FlowStopRequested -= OnOverlayFlowStopRequested;
                 overlayServer.Dispose();
                 overlayServer = null;
             }
@@ -428,6 +484,143 @@ namespace ActEnhanced.KeyboundProbe
             }
         }
 
+        private void InitializeModeHotkeys()
+        {
+            RefreshModeHotkeyButtons();
+            if (modeHotkeys == null)
+            {
+                modeHotkeys = new KeyboundModeHotkeyManager();
+                modeHotkeys.ModeRequested += OnModeHotkeyRequested;
+            }
+            RegisterModeHotkeys();
+        }
+
+        private void RegisterModeHotkeys()
+        {
+            if (modeHotkeys == null || automationSettings == null) return;
+            string error = modeHotkeys.Register(GetModeHotkey(KeyboundActSettings.HumanMode),
+                GetModeHotkey(KeyboundActSettings.WarriorMode),
+                GetModeHotkey(KeyboundActSettings.CustomMode));
+            if (modeHotkeyStatus != null)
+                modeHotkeyStatus.Text = String.IsNullOrEmpty(error)
+                    ? "模式热键：已启用；按键将在系统范围内占用"
+                    : "模式热键：" + error;
+        }
+
+        private void CaptureModeHotkey(string mode)
+        {
+            if (automationSettings == null) return;
+            KeyboundHotkeyBinding current = GetModeHotkey(mode);
+            string captureError = null;
+            if (modeHotkeys != null) modeHotkeys.UnregisterAll();
+            try
+            {
+                using (var dialog = new KeyboundHotkeyCaptureDialog(TimingModeDisplayName(mode), current))
+                {
+                    IWin32Window owner = autoTimingMode == null ? null : autoTimingMode.FindForm();
+                    DialogResult result = owner == null ? dialog.ShowDialog() : dialog.ShowDialog(owner);
+                    if (result != DialogResult.OK || dialog.Binding == null) return;
+                    if (HotkeyUsedByOtherMode(mode, dialog.Binding))
+                    {
+                        captureError = "该按键已绑定到其他参数模式";
+                        return;
+                    }
+                    SetModeHotkey(mode, dialog.Binding);
+                    automationSettings.Normalize();
+                    SaveAutomationSettings();
+                    RefreshModeHotkeyButtons();
+                    WriteAutomationDiagnostic("TIMING_HOTKEY_BOUND", 0, String.Empty,
+                        "mode=" + mode + "; hotkey=" + dialog.Binding.DisplayText);
+                }
+            }
+            finally
+            {
+                RegisterModeHotkeys();
+                if (captureError != null && modeHotkeyStatus != null)
+                    modeHotkeyStatus.Text = "模式热键：" + captureError;
+            }
+        }
+
+        private void OnModeHotkeyRequested(string mode)
+        {
+            SetTimingMode(mode, "热键 " + GetModeHotkey(mode).DisplayText);
+        }
+
+        private void SetTimingMode(string mode, string source)
+        {
+            if (automationSettings == null) return;
+            automationSettings.TimingMode = mode;
+            automationSettings.Normalize();
+            ApplyTimingControls();
+            SaveAutomationSettings();
+            if (modeHotkeyStatus != null)
+                modeHotkeyStatus.Text = "模式热键：已切换为" + TimingModeDisplayName(mode) +
+                    "（" + source + "）";
+            WriteAutomationDiagnostic("TIMING_MODE_CHANGED", 0, String.Empty,
+                "mode=" + automationSettings.TimingMode + "; source=" + source);
+        }
+
+        private void RefreshModeHotkeyButtons()
+        {
+            if (automationSettings == null) return;
+            if (humanHotkeyButton != null)
+                humanHotkeyButton.Text = "拟人：" + GetModeHotkey(KeyboundActSettings.HumanMode).DisplayText;
+            if (warriorHotkeyButton != null)
+                warriorHotkeyButton.Text = "光之战士：" +
+                    GetModeHotkey(KeyboundActSettings.WarriorMode).DisplayText;
+            if (customHotkeyButton != null)
+                customHotkeyButton.Text = "自定义：" +
+                    GetModeHotkey(KeyboundActSettings.CustomMode).DisplayText;
+        }
+
+        private KeyboundHotkeyBinding GetModeHotkey(string mode)
+        {
+            if (mode == KeyboundActSettings.WarriorMode)
+                return new KeyboundHotkeyBinding(automationSettings.WarriorHotkeyKey,
+                    automationSettings.WarriorHotkeyModifiers);
+            if (mode == KeyboundActSettings.CustomMode)
+                return new KeyboundHotkeyBinding(automationSettings.CustomHotkeyKey,
+                    automationSettings.CustomHotkeyModifiers);
+            return new KeyboundHotkeyBinding(automationSettings.HumanHotkeyKey,
+                automationSettings.HumanHotkeyModifiers);
+        }
+
+        private void SetModeHotkey(string mode, KeyboundHotkeyBinding binding)
+        {
+            if (mode == KeyboundActSettings.WarriorMode)
+            {
+                automationSettings.WarriorHotkeyKey = binding.KeyCode;
+                automationSettings.WarriorHotkeyModifiers = binding.Modifiers;
+            }
+            else if (mode == KeyboundActSettings.CustomMode)
+            {
+                automationSettings.CustomHotkeyKey = binding.KeyCode;
+                automationSettings.CustomHotkeyModifiers = binding.Modifiers;
+            }
+            else
+            {
+                automationSettings.HumanHotkeyKey = binding.KeyCode;
+                automationSettings.HumanHotkeyModifiers = binding.Modifiers;
+            }
+        }
+
+        private bool HotkeyUsedByOtherMode(string mode, KeyboundHotkeyBinding binding)
+        {
+            return (mode != KeyboundActSettings.HumanMode &&
+                    binding.SameAs(GetModeHotkey(KeyboundActSettings.HumanMode))) ||
+                (mode != KeyboundActSettings.WarriorMode &&
+                    binding.SameAs(GetModeHotkey(KeyboundActSettings.WarriorMode))) ||
+                (mode != KeyboundActSettings.CustomMode &&
+                    binding.SameAs(GetModeHotkey(KeyboundActSettings.CustomMode)));
+        }
+
+        private static string TimingModeDisplayName(string mode)
+        {
+            if (mode == KeyboundActSettings.WarriorMode) return "光之战士";
+            if (mode == KeyboundActSettings.CustomMode) return "自定义";
+            return "拟人";
+        }
+
         private static int TimingModeIndex(string mode)
         {
             if (mode == KeyboundActSettings.WarriorMode) return 1;
@@ -494,8 +687,10 @@ namespace ActEnhanced.KeyboundProbe
             try
             {
                 capture = new ProbeCaptureSession(captureDirectory);
+                lastProbeAddonSignature = String.Empty;
+                lastProbeObjectSignature = String.Empty;
                 capture.Mark("CAPTURE_STARTED");
-                outputLabel.Text = "当前捕获：" + capture.BinaryPath;
+                outputLabel.Text = "当前捕获：" + capture.BinaryPath + "；内存日志：" + capture.MemoryPath;
                 RefreshUi();
             }
             catch (Exception ex)
@@ -518,12 +713,13 @@ namespace ActEnhanced.KeyboundProbe
                 return;
 
             string summary = current.SummaryPath;
+            string memory = current.MemoryPath;
             try
             {
                 current.Mark("CAPTURE_STOP_REQUESTED");
                 current.Stop();
                 if (showResult)
-                    MessageBox.Show("捕获已完成。\r\n\r\n摘要：" + summary,
+                    MessageBox.Show("捕获已完成。\r\n\r\n摘要：" + summary + "\r\n内存日志：" + memory,
                         "魔光打字通", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (Exception ex)
@@ -599,9 +795,17 @@ namespace ActEnhanced.KeyboundProbe
                 System.Threading.Interlocked.CompareExchange(ref memoryPollBusy, 1, 0) != 0)
                 return;
             KtgProcessMemoryReader reader = memoryReader;
+            ProbeCaptureSession activeCapture = capture;
+            bool includeProbe = (activeCapture != null && activeCapture.IsAccepting) || singleRun.Active;
+            int flowGeneration = singleRunGeneration;
             System.Threading.ThreadPool.QueueUserWorkItem(delegate
             {
-                KtgMemorySnapshot snapshot = reader.ReadSnapshot();
+                KtgMemorySnapshot snapshot = reader.ReadSnapshot(includeProbe);
+                int guardGeneration = System.Threading.Interlocked.CompareExchange(ref directInputGeneration, 0, 0);
+                snapshot.AfkGuard = reader.RefreshAfkGuard(
+                    System.Threading.Interlocked.CompareExchange(ref afkGuardEnabled, 0, 0) != 0,
+                    delegate { return System.Threading.Interlocked.CompareExchange(ref afkGuardEnabled, 0, 0) != 0 &&
+                        System.Threading.Interlocked.CompareExchange(ref directInputGeneration, 0, 0) == guardGeneration; });
                 if (activePrompts == null || activePrompts.IsDisposed)
                 {
                     System.Threading.Interlocked.Exchange(ref memoryPollBusy, 0);
@@ -611,7 +815,11 @@ namespace ActEnhanced.KeyboundProbe
                 {
                     activePrompts.BeginInvoke((Action)(delegate
                     {
-                        try { ApplyMemorySnapshot(snapshot); }
+                        try
+                        {
+                            if (includeProbe && flowGeneration == singleRunGeneration) TickSingleRun(snapshot);
+                            ApplyMemorySnapshot(snapshot);
+                        }
                         finally { System.Threading.Interlocked.Exchange(ref memoryPollBusy, 0); }
                     }));
                 }
@@ -624,6 +832,8 @@ namespace ActEnhanced.KeyboundProbe
 
         private void ApplyMemorySnapshot(KtgMemorySnapshot snapshot)
         {
+            RecordMemoryProbe(snapshot);
+            ApplyAfkGuardObservation(snapshot.AfkGuard);
             keyboundAddonPresent = snapshot.AddonCount > 0;
             overlayMemoryStatus = snapshot.Status ?? String.Empty;
             overlayTargetCount = snapshot.Targets.Count;
@@ -631,7 +841,7 @@ namespace ActEnhanced.KeyboundProbe
             overlayInputFocused = snapshot.InputFocused;
             overlayInputText = snapshot.InputText ?? String.Empty;
             overlayInputDiagnostic = snapshot.InputDiagnostic ?? String.Empty;
-            memoryStatusLabel.Text = "ACT 只读内存：" +
+            memoryStatusLabel.Text = "ACT 内存读取：" +
                 (String.IsNullOrEmpty(snapshot.Status) ? "等待数据" : snapshot.Status);
             snapshot.Targets.Sort(delegate(KtgMemoryTarget left, KtgMemoryTarget right)
             {
@@ -746,6 +956,254 @@ namespace ActEnhanced.KeyboundProbe
             TryStartDirectInput(snapshot.Targets);
         }
 
+        private void StartSingleRun()
+        {
+            if (singleRun.Active || singleRunBusy != 0) return;
+            autoInputEnabled.Checked = false;
+            singleRunStartedCapture = capture == null || !capture.IsAccepting;
+            if (singleRunStartedCapture) StartCapture(null, EventArgs.Empty);
+            System.Threading.Interlocked.Increment(ref singleRunGeneration);
+            singleRun.Start(DateTime.UtcNow, (int)automationRunCount.Value);
+            singleRunStart.Enabled = false;
+            automationRunCount.Enabled = false;
+            singleRunStatus.Text = "连续流程：" + singleRun.Progress + "；等待靠近报名登记员";
+            WriteAutomationDiagnostic("FLOW_START", 0, String.Empty,
+                "targetRuns=" + singleRun.TargetRuns + "; completed=0; range=5; npcBaseId=1058751");
+            if (capture != null && capture.IsAccepting) capture.Mark("FLOW_START targetRuns=" + singleRun.TargetRuns);
+            GameInputSender.ActivateGameWindow();
+        }
+
+        private void StopSingleRun(string reason)
+        {
+            if (!singleRun.Active) return;
+            singleRun.Stop(reason);
+            FinishSingleRun();
+        }
+
+        private void FinishSingleRun()
+        {
+            System.Threading.Interlocked.Increment(ref singleRunGeneration);
+            autoInputEnabled.Checked = false;
+            singleRunStart.Enabled = singleRunBusy == 0;
+            automationRunCount.Enabled = true;
+            singleRunStatus.Text = "连续流程：" + singleRun.Progress + "；" + singleRun.Status;
+            WriteAutomationDiagnostic("FLOW_STOP", 0, String.Empty,
+                singleRun.Status + "; completed=" + singleRun.CompletedRuns + "; targetRuns=" + singleRun.TargetRuns);
+            if (singleRunStartedCapture)
+            {
+                singleRunStartedCapture = false;
+                StopCaptureInternal(false);
+            }
+        }
+
+        private void TickSingleRun(KtgMemorySnapshot snapshot)
+        {
+            if (!singleRun.Active || singleRunBusy != 0) return;
+            bool beforeCombat = singleRun.InCombat;
+            int previousCompleted = singleRun.CompletedRuns;
+            KeyboundFlowAction action = singleRun.Tick(snapshot, DateTime.UtcNow, GameInputSender.IsGameForeground());
+            if (singleRun.CompletedRuns != previousCompleted)
+            {
+                WriteAutomationDiagnostic("FLOW_ROUND_COMPLETE", 0, String.Empty,
+                    "completed=" + singleRun.CompletedRuns + "; targetRuns=" + singleRun.TargetRuns);
+                if (capture != null && capture.IsAccepting)
+                    capture.Mark("FLOW_ROUND_COMPLETE " + singleRun.CompletedRuns + "/" + singleRun.TargetRuns);
+            }
+            if (!singleRun.Active) { FinishSingleRun(); return; }
+            if (beforeCombat != singleRun.InCombat)
+                autoInputEnabled.Checked = singleRun.InCombat;
+            string status = singleRun.Progress + "；" + singleRun.Status;
+            singleRunStatus.Text = "连续流程：" + status;
+            if (lastSingleRunStatus != status)
+            {
+                lastSingleRunStatus = status;
+                WriteAutomationDiagnostic("FLOW_STATE", 0, String.Empty, status);
+            }
+            if (action == null) return;
+            int generation = singleRunGeneration;
+            System.Threading.Interlocked.Exchange(ref singleRunBusy, 1);
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                GameInputResult result = GameInputResult.Cancelled;
+                Func<bool> current = delegate
+                {
+                    return System.Threading.Interlocked.CompareExchange(ref singleRunGeneration, 0, 0) == generation;
+                };
+                try
+                {
+                    // Re-read the target/button immediately before sending input; never use an old UI pointer.
+                    KtgMemorySnapshot fresh = memoryReader.ReadSnapshot(true);
+                    if (current() && fresh.ProcessId == snapshot.ProcessId)
+                    {
+                        bool systemMenuVisible = KeyboundSingleRun.FindAddon(fresh, "SystemMenu") != null;
+                        if (action.Kind == "CloseSystemMenu")
+                        {
+                            if (systemMenuVisible) result = GameInputSender.CloseObservedSystemMenu(current);
+                        }
+                        else if (systemMenuVisible)
+                        {
+                            // A menu may open between scheduling and execution. Wait for the next snapshot.
+                            result = GameInputResult.Cancelled;
+                        }
+                        else if (action.Kind == "TargetNpc" || action.Kind == "Interact")
+                        {
+                            foreach (KtgObjectProbe npc in fresh.Objects)
+                            {
+                                if (npc.BaseId != KeyboundSingleRun.RegistrationNpcBaseId ||
+                                    !npc.Targetable || !KeyboundSingleRun.IsNearby(fresh.LocalPlayer, npc)) continue;
+                                if (action.Kind == "TargetNpc") result = GameInputSender.TargetRegistrationNpc(current);
+                                else if (npc.CurrentTarget) result = GameInputSender.InteractWithTarget(current);
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            KtgAddonProbe addon = KeyboundSingleRun.FindAddon(fresh, action.Addon);
+                            if (addon != null && (addon.Name != "ContentsFinderConfirm" ||
+                                addon.TextNodes.Exists(delegate(string text) { return text.Contains("魔光键影"); })))
+                                foreach (KtgButtonProbe button in addon.Buttons)
+                                    if (button.NodeId == action.NodeId && button.Text == action.Text &&
+                                        KeyboundSingleRun.IsAllowedButton(addon.Name, button.Text))
+                                    { result = GameInputSender.ClickFlowButton(button, current); break; }
+                        }
+                    }
+                    WriteAutomationDiagnostic("FLOW_ACTION", 0, String.Empty,
+                        action.Kind + "; addon=" + action.Addon + "; node=" + action.NodeId +
+                        "; text=" + action.Text + "; result=" + result +
+                        (action.Kind == "TargetNpc" ? "; keys=F12; awaiting-memory-target-confirmation" : String.Empty));
+                }
+                catch (Exception ex) { WriteAutomationDiagnostic("FLOW_ERROR", 0, String.Empty, ex.Message); }
+                finally
+                {
+                    System.Threading.Interlocked.Exchange(ref singleRunBusy, 0);
+                    try { singleRunStart.BeginInvoke((Action)delegate { singleRunStart.Enabled = !singleRun.Active; }); }
+                    catch { }
+                }
+            });
+        }
+
+        private void RecordMemoryProbe(KtgMemorySnapshot snapshot)
+        {
+            ProbeCaptureSession current = capture;
+            if (current == null || !current.IsAccepting)
+                return;
+            if (snapshot.AfkGuard != null)
+                current.RecordMemory("BRAWLER_IDLE", snapshot.AfkGuard.Detail());
+            if (snapshot.AfkTimer == null)
+                current.RecordMemory("AFK_UNAVAILABLE", "pid=" + snapshot.ProcessId);
+            else
+                current.RecordMemory("AFK", FormatAfkProbe(snapshot.AfkTimer));
+
+            string addons = FormatAddonProbe(snapshot.Addons);
+            if (!String.Equals(addons, lastProbeAddonSignature, StringComparison.Ordinal))
+            {
+                lastProbeAddonSignature = addons;
+                current.RecordMemory("ADDONS", addons);
+            }
+            string objects = FormatObjectProbe(snapshot.Objects);
+            if (!String.Equals(objects, lastProbeObjectSignature, StringComparison.Ordinal))
+            {
+                lastProbeObjectSignature = objects;
+                current.RecordMemory("OBJECTS", objects);
+            }
+        }
+
+        private void ApplyAfkGuardObservation(KeyboundAfkObservation observation)
+        {
+            if (observation == null) return;
+            string state = observation.State + ":" + observation.Reason;
+            DateTime now = DateTime.UtcNow;
+            if (state != lastAfkGuardState || (now - lastAfkGuardLogUtc).TotalSeconds >= 10)
+            {
+                lastAfkGuardState = state;
+                lastAfkGuardLogUtc = now;
+                WriteAutomationDiagnostic("AFK_GUARD", 0, String.Empty, observation.Detail());
+            }
+            afkGuardStatusLabel.Text = observation.Reset ? "防闲置：专用计时已重置" :
+                observation.Failed ? "防闲置：校验失败（" + observation.Reason + "）" :
+                observation.Reason == "automation-disabled" ? "防闲置：自动攻击已关闭，仅观察计时" :
+                observation.State == "observed" ? "防闲置：已定位计时；等待近期输入回读" : "防闲置：等待小游戏";
+            if (observation.Failed && autoInputEnabled.Checked)
+            {
+                autoInputEnabled.Checked = false;
+                StopSingleRun("防闲置校验失败：" + observation.Reason);
+                autoInputStatus.Text = "自动输入：已停止；请检查 AFK_GUARD 日志";
+            }
+        }
+
+        internal static string FormatAfkProbe(KtgAfkTimerSnapshot timer)
+        {
+            return "address=0x" + timer.Address.ToString("X") +
+                ";afk=" + ProbeNumber(timer.AfkTimer) +
+                ";content=" + ProbeNumber(timer.ContentInputTimer) +
+                ";input=" + ProbeNumber(timer.InputTimer) +
+                ";autoLimit=" + ProbeNumber(timer.AutoAfkTimeLimit) +
+                ";instanceLimit=" + ProbeNumber(timer.InstanceContentAfkTimeLimit) +
+                ";pvpLimit=" + ProbeNumber(timer.PvpAfkTimeLimit) +
+                ";mjiLimit=" + ProbeNumber(timer.MjiAfkTimeLimit) +
+                ";afkLimit=" + ProbeNumber(timer.AfkTimeLimit) +
+                ";status=" + timer.Status + ";territory=" + timer.TerritoryTypeId +
+                ";controller=" + ProbeNumbers(timer.ControllerTimers) +
+                ";mouse=" + ProbeNumbers(timer.MouseTimers);
+        }
+
+        internal static string FormatAddonProbe(IList<KtgAddonProbe> addons)
+        {
+            var result = new StringBuilder();
+            foreach (KtgAddonProbe addon in addons)
+            {
+                if (result.Length > 0) result.Append(" || ");
+                result.Append(addon.Name).Append("@0x").Append(addon.Address.ToString("X"))
+                    .Append("[ready=").Append(addon.Ready ? 1 : 0)
+                    .Append(",visible=").Append(addon.Visible ? 1 : 0)
+                    .Append(",nodes=").Append(addon.NodeCount).Append(']');
+                if (addon.TextNodes.Count > 0)
+                    result.Append('{').Append(String.Join(" | ", addon.TextNodes.ToArray())).Append('}');
+                foreach (KtgButtonProbe button in addon.Buttons)
+                    result.Append("<button:").Append(button.NodeId).Append(':').Append(button.Text)
+                        .Append(":enabled=").Append(button.Enabled).Append(":pos=")
+                        .Append(ProbeNumber(button.X)).Append(',').Append(ProbeNumber(button.Y)).Append('>');
+            }
+            return result.ToString();
+        }
+
+        internal static string FormatObjectProbe(IList<KtgObjectProbe> objects)
+        {
+            var ordered = new List<KtgObjectProbe>(objects);
+            ordered.Sort(delegate(KtgObjectProbe left, KtgObjectProbe right)
+            {
+                int target = right.CurrentTarget.CompareTo(left.CurrentTarget);
+                return target != 0 ? target : left.ObjectIndex.CompareTo(right.ObjectIndex);
+            });
+            var result = new StringBuilder();
+            foreach (KtgObjectProbe value in ordered)
+            {
+                if (result.Length > 0) result.Append(" || ");
+                result.Append(value.CurrentTarget ? "TARGET:" : String.Empty).Append(value.Name)
+                    .Append("@0x").Append(value.Address.ToString("X"))
+                    .Append("[entity=0x").Append(value.EntityId.ToString("X8"))
+                    .Append(",base=").Append(value.BaseId).Append(",layout=").Append(value.LayoutId)
+                    .Append(",index=").Append(value.ObjectIndex).Append(",kind=").Append(value.ObjectKind)
+                    .Append('/').Append(value.SubKind).Append(",targetable=").Append(value.Targetable ? 1 : 0)
+                    .Append(",pos=").Append(ProbeNumber(value.X)).Append(',')
+                    .Append(ProbeNumber(value.Y)).Append(',').Append(ProbeNumber(value.Z)).Append(']');
+            }
+            return result.ToString();
+        }
+
+        private static string ProbeNumber(float value)
+        {
+            return value.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        private static string ProbeNumbers(float[] values)
+        {
+            var result = new string[values.Length];
+            for (int index = 0; index < values.Length; index++)
+                result[index] = ProbeNumber(values[index]);
+            return String.Join(",", result);
+        }
+
         private void AddMemoryRecent(KtgMemoryTarget target)
         {
             var item = new ListViewItem(DateTime.Now.ToString("HH:mm:ss.fff"));
@@ -821,10 +1279,6 @@ namespace ActEnhanced.KeyboundProbe
             string typedText = GameInputSender.NormalizeChineseAnswer(target.Text);
             DateTime selectedUtc = DateTime.UtcNow;
             var random = new Random(unchecked(Environment.TickCount * 31 + (int)(sequence & 0x7FFFFFFF)));
-            KeyboundWord physicalWord = selectedUtc >= nextPhysicalPinyinUtc && wordTable != null
-                ? wordTable.GetRandomDifferent(target.Text, random) : null;
-            string physicalPinyin = physicalWord == null ? String.Empty : physicalWord.InputText;
-            bool usePhysicalPinyin = physicalPinyin.Length != 0;
             KeyboundTimingPlan timing = (automationSettings ?? new KeyboundActSettings())
                 .CreateTimingPlan(typedText, random);
             autoInputStatus.Text = "自动输入：窗口投递 “" + target.Text + "” → 0x" +
@@ -834,9 +1288,6 @@ namespace ActEnhanced.KeyboundProbe
                 "; combatStage=P" + combatPlanner.CombatStage +
                 "; bnpc=0x" + combatPlanner.GetActorType(target.EntityId).ToString("X") +
                 "; appearance=" + combatPlanner.GetAppearanceOrder(target.EntityId) +
-                "; pinyin=" + (physicalPinyin.Length == 0 ? "<missing>" : physicalPinyin) +
-                "; physicalWord=" + (physicalWord == null ? "<none>" : physicalWord.DisplayText) +
-                "; physicalPinyin=" + usePhysicalPinyin +
                 "; timingMode=" + timing.Mode + "; plannedMs=" + timing.PlannedTotalMs +
                 "; minimumMs=" + timing.TotalMinimumMs + "; maximumMs=" + timing.TotalMaximumMs +
                 "; " + GameInputSender.DescribeFfxivInputTarget());
@@ -860,28 +1311,6 @@ namespace ActEnhanced.KeyboundProbe
                 if (result == GameInputResult.Sent)
                 {
                     DateTime earliestSubmitUtc = selectedUtc.AddMilliseconds(timing.TotalMinimumMs);
-                    if (usePhysicalPinyin)
-                    {
-                        int keyHoldMs = PinyinPreludeKeyHoldMilliseconds(timing);
-                        result = GameInputSender.SendPhysicalPinyinAttempt(
-                            physicalPinyin, keyHoldMs, current);
-                        bool attemptCleared = result == GameInputResult.Sent &&
-                            WaitForInputText(String.Empty, 800, current);
-                        WriteAutomationDiagnostic(attemptCleared ? "PHYSICAL_KEYS_OK" :
-                                "PHYSICAL_KEYS_FAIL", target.EntityId, target.Text,
-                            result + "; pinyin=" + physicalPinyin + "; holdMs=" + keyHoldMs +
-                            "; wrongWord=" + physicalWord.DisplayText +
-                            "; submitted=true; cleared=" + attemptCleared +
-                            "; actual=" + CurrentInputText());
-                        if (attemptCleared)
-                        {
-                            nextPhysicalPinyinUtc = DateTime.UtcNow.AddMilliseconds(
-                                NextPhysicalPinyinInterval());
-                            result = EnsureKeyboundInputFocused(target, current);
-                        }
-                        else if (result == GameInputResult.Sent)
-                            result = GameInputResult.NativeInputFailed;
-                    }
                     if (result == GameInputResult.Sent)
                         result = TypeTextWithEcho(target, typedText, timing.CharacterDelaysMs,
                             current, cadenceDeadlineUtc);
@@ -924,33 +1353,6 @@ namespace ActEnhanced.KeyboundProbe
             worker.IsBackground = true;
             worker.SetApartmentState(System.Threading.ApartmentState.STA);
             worker.Start();
-        }
-
-        private static int NextPhysicalPinyinInterval()
-        {
-            var random = new Random(unchecked(Environment.TickCount * 397));
-            return PhysicalPinyinSchedule.NextIntervalMilliseconds(random);
-        }
-
-        private static int PinyinPreludeKeyHoldMilliseconds(KeyboundTimingPlan timing)
-        {
-            if (timing == null)
-                return 18;
-            if (String.Equals(timing.Mode, KeyboundActSettings.WarriorMode,
-                StringComparison.Ordinal))
-                return 8;
-            if (String.Equals(timing.Mode, KeyboundActSettings.HumanMode,
-                StringComparison.Ordinal))
-                return 18;
-            int total = 0;
-            int count = 0;
-            foreach (int delay in timing.CharacterDelaysMs ?? new int[0])
-            {
-                total += delay;
-                count++;
-            }
-            int derived = count == 0 ? 18 : total / count / 4;
-            return Math.Max(8, Math.Min(25, derived));
         }
 
         private static bool WaitUntilSubmitWindow(DateTime notBeforeUtc, DateTime deadlineUtc,
@@ -1105,6 +1507,8 @@ namespace ActEnhanced.KeyboundProbe
                     if (result != GameInputResult.Sent)
                         break;
                     echoed = WaitForInputText(expected, 300, current);
+                    if (echoed && memoryReader != null)
+                        memoryReader.RecordAcknowledgedInput(initial.ProcessId, current);
                     WriteAutomationDiagnostic(echoed ? "ECHO_CHAR_OK" : "ECHO_CHAR_RETRY",
                         target.EntityId, target.Text, "char=" + character + "; attempt=" + attempt +
                         "; expected=" + expected + "; actual=" + CurrentInputText());
@@ -1260,9 +1664,25 @@ namespace ActEnhanced.KeyboundProbe
             {
                 autoInputEnabled.BeginInvoke((Action)(delegate
                 {
+                    if (!enabled) StopSingleRun("已从悬浮窗关闭自动攻击，连续流程停止");
                     autoInputEnabled.Checked = enabled;
                     PublishOverlayState();
                 }));
+            }
+            catch { }
+        }
+
+        private void OnOverlayFlowStopRequested()
+        {
+            if (autoInputEnabled == null || autoInputEnabled.IsDisposed) return;
+            try
+            {
+                autoInputEnabled.BeginInvoke((Action)delegate
+                {
+                    StopSingleRun("已从悬浮窗中断连续流程");
+                    autoInputEnabled.Checked = false;
+                    PublishOverlayState();
+                });
             }
             catch { }
         }
@@ -1306,6 +1726,11 @@ namespace ActEnhanced.KeyboundProbe
                 .Append(",\"InputText\":").Append(KeyboundOverlayServer.JsonString(overlayInputText))
                 .Append(",\"InputDiagnostic\":").Append(KeyboundOverlayServer.JsonString(overlayInputDiagnostic))
                 .Append(",\"AutomationEnabled\":").Append(autoInputEnabled != null && autoInputEnabled.Checked ? "true" : "false")
+                .Append(",\"FlowActive\":").Append(singleRun.Active ? "true" : "false")
+                .Append(",\"FlowCompletedRuns\":").Append(singleRun.CompletedRuns)
+                .Append(",\"FlowTargetRuns\":").Append(singleRun.TargetRuns)
+                .Append(",\"FlowStage\":").Append(KeyboundOverlayServer.JsonString(singleRun.Stage))
+                .Append(",\"FlowStatus\":").Append(KeyboundOverlayServer.JsonString(singleRun.Status))
                 .Append(",\"AutomationStatus\":").Append(KeyboundOverlayServer.JsonString(autoInputStatus == null ? String.Empty : autoInputStatus.Text))
                 .Append(",\"AttemptState\":").Append(KeyboundOverlayServer.JsonString(attemptState))
                 .Append(",\"EntityId\":").Append(KeyboundOverlayServer.JsonString(entityId == 0 ? String.Empty : "0x" + entityId.ToString("X8")))

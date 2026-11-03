@@ -8,13 +8,34 @@ internal static class KeyboundProbeTests
 {
     private static int failures;
 
-    private static void Main()
+    private static void Main(string[] args)
     {
+        KeyboundAfkGuardTests.Run(Assert);
+        if (args.Length == 1 && args[0] == "afk")
+        {
+            Environment.ExitCode = failures == 0 ? 0 : 1;
+            Console.WriteLine(failures == 0 ? "PASS: AFK guard tests" : "FAIL: AFK guard tests");
+            return;
+        }
+        if (args.Length == 1 && args[0] == "flow")
+        {
+            TestRepeatedFlow();
+            TestSingleRun();
+            TestSingleRunSystemMenu();
+            TestActSettings();
+            TestOverlayServer();
+            Environment.ExitCode = failures == 0 ? 0 : 1;
+            Console.WriteLine(failures == 0 ? "PASS: automation flow tests" : "FAIL: automation flow tests");
+            return;
+        }
         TestHeader();
         TestActorCastPacket();
         TestCapture();
         TestDecoder();
         TestKtgMemoryLayout();
+        TestSingleRun();
+        TestRepeatedFlow();
+        TestSingleRunSystemMenu();
         TestDirectPromptCompletionTracker();
         TestCombatPlanner();
         TestCombatLogParser();
@@ -46,6 +67,221 @@ internal static class KeyboundProbeTests
                 interval <= PhysicalPinyinSchedule.MaximumIntervalMilliseconds,
                 "physical pinyin interval remains within 45-60 seconds");
         }
+    }
+
+    private static void TestSingleRunSystemMenu()
+    {
+        DateTime now = DateTime.UtcNow;
+        var flow = new KeyboundSingleRun();
+        var snapshot = new KtgMemorySnapshot { ProcessId = 1,
+            AfkTimer = new KtgAfkTimerSnapshot { TerritoryTypeId = 1360 },
+            LocalPlayer = new KtgObjectProbe() };
+        snapshot.Objects.Add(new KtgObjectProbe { BaseId = 1058751, Name = "报名登记员",
+            ObjectKind = 3, Targetable = true, CurrentTarget = true, X = 2 });
+        var menu = new KtgAddonProbe { Name = "SystemMenu", Ready = true, Visible = true };
+        snapshot.Addons.Add(menu);
+        flow.Start(now);
+        Assert(flow.Tick(snapshot, now.AddSeconds(3), false) == null, "menu recovery respects foreground");
+        Assert(flow.Tick(snapshot, now.AddSeconds(3), true).Kind == "CloseSystemMenu",
+            "visible system menu is closed before NPC interaction");
+        Assert(flow.Tick(snapshot, now.AddSeconds(4), true) == null,
+            "menu recovery waits for a fresh disappearance acknowledgement");
+        menu.Visible = false;
+        Assert(flow.Tick(snapshot, now.AddSeconds(5), true).Kind == "Interact",
+            "closed system menu is not toggled open again");
+        snapshot.Objects[0].CurrentTarget = false;
+        Assert(flow.Tick(snapshot, now.AddSeconds(9), true).Kind == "TargetNpc",
+            "normal targeting does not request Escape when menu is hidden");
+        flow.Start(now);
+        menu.Visible = true;
+        flow.Tick(snapshot, now.AddSeconds(3), true);
+        flow.Tick(snapshot, now.AddSeconds(5), true);
+        flow.Tick(snapshot, now.AddSeconds(7), true);
+        flow.Tick(snapshot, now.AddSeconds(9), true);
+        Assert(!flow.Active, "failed menu recovery is bounded");
+        Assert(GameInputSender.CloseObservedSystemMenu(delegate { return false; }) == GameInputResult.Cancelled,
+            "cancelled menu recovery never emits Escape");
+    }
+
+    private static void TestSingleRun()
+    {
+        DateTime now = DateTime.UtcNow;
+        var flow = new KeyboundSingleRun();
+        var snapshot = new KtgMemorySnapshot { ProcessId = 1,
+            AfkTimer = new KtgAfkTimerSnapshot { TerritoryTypeId = 1360 },
+            LocalPlayer = new KtgObjectProbe { X = 0, Y = 0, Z = 0 } };
+        var npc = new KtgObjectProbe { BaseId = 1058751, Name = "报名登记员", ObjectKind = 3,
+            Targetable = true, X = 6 };
+        snapshot.Objects.Add(npc);
+        flow.Start(now);
+        Assert(flow.Tick(snapshot, now.AddSeconds(3), true) == null, "flow waits outside NPC range");
+        npc.X = 3;
+        Assert(flow.Tick(snapshot, now.AddSeconds(4), false) == null, "flow waits for game foreground");
+        Assert(flow.Tick(snapshot, now.AddSeconds(4), true).Kind == "TargetNpc", "flow targets nearby NPC");
+        var otherNpc = new KtgObjectProbe { BaseId = 1058752, Name = "解说员", ObjectKind = 3,
+            CurrentTarget = true, Targetable = true, X = 2 };
+        snapshot.Objects.Add(otherNpc);
+        Assert(flow.Tick(snapshot, now.AddSeconds(8), true).Kind == "TargetNpc",
+            "nearest-NPC binding never interacts when a different NPC is selected");
+        snapshot.Objects.Remove(otherNpc);
+        flow.Start(now);
+        npc.CurrentTarget = true;
+        Assert(flow.Tick(snapshot, now.AddSeconds(8), true).Kind == "Interact", "flow interacts only after target acknowledged");
+        var entry = new KtgAddonProbe { Name = "KTGEnterDialogue", Ready = true, Visible = true };
+        entry.Buttons.Add(new KtgButtonProbe { NodeId = 10, Text = "取消", Enabled = true });
+        entry.Buttons.Add(new KtgButtonProbe { NodeId = 11, Text = "参加", Enabled = true });
+        snapshot.Addons.Add(entry);
+        flow.Tick(snapshot, now.AddSeconds(9), true);
+        var action = flow.Tick(snapshot, now.AddSeconds(11), true);
+        Assert(action != null && action.Text == "参加", "flow selects registration button instead of cancel");
+        snapshot.Addons.Clear();
+        flow.Tick(snapshot, now.AddSeconds(12), true);
+        Assert(flow.Stage == "Queue", "flow waits for queue after entry disappears");
+        var confirm = new KtgAddonProbe { Name = "ContentsFinderConfirm", Ready = true, Visible = true };
+        confirm.TextNodes.Add("49=魔光键影");
+        confirm.Buttons.Add(new KtgButtonProbe { NodeId = 65, Text = "辞退", Enabled = true });
+        confirm.Buttons.Add(new KtgButtonProbe { NodeId = 64, Text = "保留", Enabled = true });
+        confirm.Buttons.Add(new KtgButtonProbe { NodeId = 63, Text = "出发", Enabled = false });
+        snapshot.Addons.Add(confirm);
+        Assert(flow.Tick(snapshot, now.AddSeconds(14), true) == null, "flow never clicks disabled confirm");
+        confirm.Buttons[2].Enabled = true;
+        var confirmAction = flow.Tick(snapshot, now.AddSeconds(15), true);
+        Assert(confirmAction.Addon == "ContentsFinderConfirm" && confirmAction.NodeId == 63 &&
+            confirmAction.Text == "出发", "flow selects actual CN departure button, never defer or withdraw");
+        snapshot.Addons.Clear();
+        snapshot.AfkTimer.TerritoryTypeId = 1359;
+        snapshot.AddonCount = 1;
+        flow.Tick(snapshot, now.AddSeconds(20), true);
+        Assert(flow.InCombat, "flow enables combat after actual entry");
+        var result = new KtgAddonProbe { Name = "KTGResult", Ready = true, Visible = true };
+        result.Buttons.Add(new KtgButtonProbe { NodeId = 4, Text = "退出", Enabled = true });
+        snapshot.Addons.Add(result);
+        flow.Tick(snapshot, now.AddSeconds(30), true);
+        Assert(!flow.InCombat && flow.Tick(snapshot, now.AddSeconds(32), true).Text == "退出", "flow exits only at result screen");
+        snapshot.Addons.Clear();
+        snapshot.AfkTimer.TerritoryTypeId = 1360;
+        flow.Tick(snapshot, now.AddSeconds(34), true);
+        Assert(!flow.Active && flow.Status.Contains("完成"), "flow finishes after returning without requeue");
+        flow.Start(now);
+        flow.Tick(snapshot, now.AddSeconds(130), true);
+        Assert(!flow.Active && flow.Status.Contains("超时"), "flow has bounded stage timeout");
+        flow.Start(now);
+        flow.Stop("cancel");
+        Assert(flow.Tick(snapshot, now.AddSeconds(4), true) == null, "cancel suppresses future actions");
+        flow.Start(now);
+        snapshot.ProcessId = 2;
+        flow.Tick(snapshot, now.AddSeconds(3), true);
+        snapshot.ProcessId = 3;
+        flow.Tick(snapshot, now.AddSeconds(4), true);
+        Assert(!flow.Active, "flow stops on process change");
+        flow.Start(now);
+        snapshot.Addons.Add(confirm);
+        flow.Tick(snapshot, now.AddSeconds(3), true);
+        snapshot.Addons.Add(entry);
+        flow.Tick(snapshot, now.AddSeconds(4), true);
+        snapshot.Addons.Remove(entry);
+        confirm.TextNodes.Clear();
+        confirm.TextNodes.Add("49=其他副本");
+        flow.Tick(snapshot, now.AddSeconds(5), true);
+        Assert(!flow.Active && flow.Status.Contains("不是魔光键影"), "flow rejects unrelated duty");
+        Assert(GameInputSender.TargetRegistrationNpc(delegate { return false; }) == GameInputResult.Cancelled &&
+            GameInputSender.InteractWithTarget(delegate { return false; }) == GameInputResult.Cancelled &&
+            GameInputSender.ClickFlowButton(null, delegate { return false; }) == GameInputResult.Cancelled,
+            "cancelled flow never emits keyboard or mouse input");
+        snapshot.Addons.Clear();
+        flow.Start(now);
+        flow.Tick(snapshot, now.AddSeconds(3), true);
+        flow.Tick(snapshot, now.AddSeconds(7), true);
+        flow.Tick(snapshot, now.AddSeconds(11), true);
+        flow.Tick(snapshot, now.AddSeconds(15), true);
+        flow.Tick(snapshot, now.AddSeconds(19), true);
+        Assert(!flow.Active, "NPC interaction retries are bounded");
+    }
+
+    private static void TestRepeatedFlow()
+    {
+        DateTime now = DateTime.UtcNow;
+        var flow = new KeyboundSingleRun();
+        var snapshot = new KtgMemorySnapshot { ProcessId = 1,
+            AfkTimer = new KtgAfkTimerSnapshot { TerritoryTypeId = 1360 } };
+        flow.Start(now, 2);
+        EnterFlowCombat(flow, snapshot, now);
+        Assert(flow.InCombat && flow.CompletedRuns == 0 && flow.TargetRuns == 2,
+            "repeat flow starts first run without prematurely counting it");
+        DateTime firstResult = now.AddMinutes(18);
+        ExitFlowResult(flow, snapshot, firstResult);
+        Assert(flow.Active && flow.Stage == "Npc" && flow.CompletedRuns == 1,
+            "repeat flow returns to registration after acknowledged result exit");
+        Assert(flow.Tick(snapshot, firstResult.AddSeconds(15), true) == null && flow.CompletedRuns == 1,
+            "repeated lobby snapshots neither double count nor immediately requeue");
+        // Long batches keep the timeout per run, rather than timing out after 30 total minutes.
+        DateTime second = firstResult.AddSeconds(20);
+        EnterFlowCombat(flow, snapshot, second);
+        DateTime secondResult = now.AddMinutes(36);
+        ExitFlowResult(flow, snapshot, secondResult);
+        Assert(!flow.Active && flow.CompletedRuns == 2 && flow.Status.Contains("完成"),
+            "repeat flow finishes exactly at configured run count");
+        Assert(flow.Tick(snapshot, secondResult.AddSeconds(30), true) == null && flow.CompletedRuns == 2,
+            "completed batch cannot start an extra run or count extra lobby samples");
+        flow.Start(now, 3);
+        EnterFlowCombat(flow, snapshot, now);
+        snapshot.AfkTimer.TerritoryTypeId = 1360;
+        flow.Tick(snapshot, now.AddSeconds(10), true);
+        Assert(!flow.Active && flow.CompletedRuns == 0 && flow.Status.Contains("未经过结算"),
+            "kick or early exit stops whole batch without counting or requeueing");
+        flow.Start(now, 2);
+        EnterFlowCombat(flow, snapshot, now);
+        flow.Stop("用户中断");
+        Assert(!flow.InCombat && flow.Tick(snapshot, now.AddSeconds(10), true) == null &&
+            flow.CompletedRuns == 0, "interrupt during combat prevents every later flow action");
+        flow.Start(now, 2);
+        EnterFlowCombat(flow, snapshot, now);
+        ExitFlowResult(flow, snapshot, now);
+        flow.Stop("用户中断");
+        Assert(flow.Tick(snapshot, now.AddSeconds(25), true) == null && flow.CompletedRuns == 1,
+            "interrupt between runs preserves progress and cancels next registration");
+        flow.Start(now, 2);
+        EnterFlowCombat(flow, snapshot, now);
+        snapshot.ProcessId = 2;
+        flow.Tick(snapshot, now.AddSeconds(10), true);
+        Assert(!flow.Active && flow.CompletedRuns == 0, "process changes stop repeated flow");
+        foreach (int count in new[] { 0, 1000 })
+        {
+            bool rejected = false;
+            try { flow.Start(now, count); } catch (ArgumentOutOfRangeException) { rejected = true; }
+            Assert(rejected, "repeat flow rejects out-of-range run count");
+        }
+        flow.Start(now, KeyboundSingleRun.MaximumRuns);
+        Assert(flow.TargetRuns == 999 && flow.CompletedRuns == 0, "repeat flow supports configured maximum and resets progress");
+        flow.Stop("end test");
+    }
+
+    private static void EnterFlowCombat(KeyboundSingleRun flow, KtgMemorySnapshot snapshot, DateTime now)
+    {
+        snapshot.Addons.Clear();
+        snapshot.AfkTimer.TerritoryTypeId = 1360;
+        snapshot.Addons.Add(new KtgAddonProbe { Name = "KTGEnterDialogue", Ready = true, Visible = true });
+        flow.Tick(snapshot, now.AddSeconds(3), true);
+        snapshot.Addons.Clear();
+        flow.Tick(snapshot, now.AddSeconds(5), true);
+        snapshot.AfkTimer.TerritoryTypeId = 1359;
+        snapshot.AddonCount = 1;
+        flow.Tick(snapshot, now.AddSeconds(8), true);
+    }
+
+    private static void ExitFlowResult(KeyboundSingleRun flow, KtgMemorySnapshot snapshot, DateTime now)
+    {
+        var result = new KtgAddonProbe { Name = "KTGResult", Ready = true, Visible = true };
+        result.Buttons.Add(new KtgButtonProbe { NodeId = 48, Text = "退出", Enabled = true });
+        snapshot.Addons.Add(result);
+        flow.Tick(snapshot, now.AddSeconds(10), true);
+        flow.Tick(snapshot, now.AddSeconds(12), true);
+        int before = flow.CompletedRuns;
+        snapshot.AfkTimer.TerritoryTypeId = 1360;
+        flow.Tick(snapshot, now.AddSeconds(13), true);
+        Assert(flow.CompletedRuns == before, "result still visible cannot count completion");
+        snapshot.Addons.Clear();
+        flow.Tick(snapshot, now.AddSeconds(14), true);
     }
 
 
@@ -101,6 +337,17 @@ internal static class KeyboundProbeTests
             KtgProcessMemoryReader.AtkComponentInputBaseRawStringOffset == 0x148 &&
             KtgProcessMemoryReader.AtkComponentInputBaseOwnerAddonOffset == 0x1B0,
             "KTGInput component layout");
+        Assert(KtgProcessMemoryReader.InputTimerAfkTimerOffset == 0x10 &&
+            KtgProcessMemoryReader.InputTimerContentInputTimerOffset == 0x14 &&
+            KtgProcessMemoryReader.InputTimerInputTimerOffset == 0x18 &&
+            KtgProcessMemoryReader.InputTimerAutoAfkTimeLimitOffset == 0x20 &&
+            KtgProcessMemoryReader.InputTimerInstanceContentAfkTimeLimitOffset == 0x28 &&
+            KtgProcessMemoryReader.InputTimerPvpAfkTimeLimitOffset == 0x2C &&
+            KtgProcessMemoryReader.InputTimerMjiAfkTimeLimitOffset == 0x30 &&
+            KtgProcessMemoryReader.InputTimerAfkTimeLimitOffset == 0x38 &&
+            KtgProcessMemoryReader.InputTimerStatusOffset == 0x3C &&
+            KtgProcessMemoryReader.InputTimerTerritoryTypeIdOffset == 0x42,
+            "InputTimerModule layout");
         byte[] data = { 0x00, 0x48, 0x8B, 0x05, 0x11, 0x22, 0x33, 0x44, 0x4C, 0x8B };
         byte[] pattern = { 0x48, 0x8B, 0x05, 0, 0, 0, 0, 0x4C, 0x8B };
         bool[] mask = { true, true, true, false, false, false, false, true, true };
@@ -108,7 +355,7 @@ internal static class KeyboundProbeTests
             "signature wildcard scan");
         using (var reader = new KtgProcessMemoryReader())
         {
-            KtgMemorySnapshot snapshot = reader.ReadSnapshot();
+            KtgMemorySnapshot snapshot = reader.ReadSnapshot(true);
             Assert(snapshot != null && !String.IsNullOrEmpty(snapshot.Status),
                 "memory reader reports status without game");
         }
@@ -289,6 +536,24 @@ internal static class KeyboundProbeTests
     private static void TestActSettings()
     {
         var settings = new KeyboundActSettings();
+        Assert(settings.AutomationRunCount == 1, "automation count defaults to one run");
+        Assert(settings.HumanHotkeyKey == (int)System.Windows.Forms.Keys.F1 &&
+            settings.WarriorHotkeyKey == (int)System.Windows.Forms.Keys.F2 &&
+            settings.CustomHotkeyKey == (int)System.Windows.Forms.Keys.F3 &&
+            settings.HumanHotkeyModifiers == 0 && settings.WarriorHotkeyModifiers == 0 &&
+            settings.CustomHotkeyModifiers == 0,
+            "mode hotkeys default to F1 F2 F3");
+        Assert(new KeyboundHotkeyBinding((int)System.Windows.Forms.Keys.F1,
+            KeyboundModeHotkeyManager.ModifierControl | KeyboundModeHotkeyManager.ModifierShift)
+            .DisplayText == "Ctrl+Shift+F1", "mode hotkey display text");
+        using (var hotkeys = new KeyboundModeHotkeyManager())
+        {
+            string hotkeyError = hotkeys.Register(
+                new KeyboundHotkeyBinding((int)System.Windows.Forms.Keys.F21, 0),
+                new KeyboundHotkeyBinding((int)System.Windows.Forms.Keys.F22, 0),
+                new KeyboundHotkeyBinding((int)System.Windows.Forms.Keys.F23, 0));
+            Assert(String.IsNullOrEmpty(hotkeyError), "mode global hotkeys register and release");
+        }
         KeyboundTimingProfile humanProfile = settings.GetTimingProfile("一二三四五六");
         Assert(humanProfile.ReactionDelayMs == 150 && humanProfile.CharacterDelayMs == 70 &&
             humanProfile.SubmitDelayMs == 150 && humanProfile.TotalMinimumMs == 1000 &&
@@ -346,13 +611,34 @@ internal static class KeyboundProbeTests
             settings.CustomTotalMinimumMs = 2500;
             settings.CustomTotalMaximumMs = 2000;
             settings.CustomJitterPercent = 12;
+            settings.HumanHotkeyKey = (int)System.Windows.Forms.Keys.F6;
+            settings.HumanHotkeyModifiers = KeyboundModeHotkeyManager.ModifierControl;
+            settings.WarriorHotkeyKey = (int)System.Windows.Forms.Keys.F7;
+            settings.WarriorHotkeyModifiers = KeyboundModeHotkeyManager.ModifierAlt;
+            settings.CustomHotkeyKey = (int)System.Windows.Forms.Keys.F8;
+            settings.CustomHotkeyModifiers = KeyboundModeHotkeyManager.ModifierShift;
+            settings.AutomationRunCount = 12;
             settings.Save(path);
             KeyboundActSettings loaded = KeyboundActSettings.Load(path);
             Assert(loaded.TimingMode == KeyboundActSettings.CustomMode &&
                 loaded.CustomReactionDelayMs == 240 && loaded.CustomCharacterDelayMs == 135 &&
                 loaded.CustomSubmitDelayMs == 180 && loaded.CustomTotalMinimumMs == 2500 &&
-                loaded.CustomTotalMaximumMs == 2500 && loaded.CustomJitterPercent == 12,
+                loaded.CustomTotalMaximumMs == 2500 && loaded.CustomJitterPercent == 12 &&
+                loaded.HumanHotkeyKey == (int)System.Windows.Forms.Keys.F6 &&
+                loaded.HumanHotkeyModifiers == KeyboundModeHotkeyManager.ModifierControl &&
+                loaded.WarriorHotkeyKey == (int)System.Windows.Forms.Keys.F7 &&
+                loaded.WarriorHotkeyModifiers == KeyboundModeHotkeyManager.ModifierAlt &&
+                loaded.CustomHotkeyKey == (int)System.Windows.Forms.Keys.F8 &&
+                loaded.CustomHotkeyModifiers == KeyboundModeHotkeyManager.ModifierShift,
                 "ACT cadence settings round trip");
+            Assert(loaded.AutomationRunCount == 12, "automation count persists independently of timing settings");
+            foreach (int count in new[] { 0, 1000 })
+            {
+                File.WriteAllText(path, "AutomationRunCount=" + count);
+                loaded = KeyboundActSettings.Load(path);
+                Assert(loaded.AutomationRunCount >= 1 && loaded.AutomationRunCount <= 999,
+                    "persisted automation count is bounded");
+            }
 
             File.WriteAllLines(path, new[] {
                 "Humanize=False", "BlatantMode=False", "StartDelayMinMs=100",
@@ -444,6 +730,7 @@ internal static class KeyboundProbeTests
         try
         {
             bool requested = false;
+            int flowStopRequests = 0;
             using (var server = new KeyboundOverlayServer(directory))
             {
                 Assert(server.Port > 0 && String.IsNullOrEmpty(server.Error), "overlay loopback server starts");
@@ -454,6 +741,7 @@ internal static class KeyboundProbeTests
                 string token = runtime.Substring(start, end - start);
                 server.SetState("{\"Version\":1,\"Ready\":true}");
                 server.AutomationRequested += delegate(bool enabled) { requested = enabled; };
+                server.FlowStopRequested += delegate { flowStopRequests++; };
                 using (var client = new WebClient())
                 {
                     client.Proxy = null;
@@ -464,6 +752,17 @@ internal static class KeyboundProbeTests
                     client.UploadData(root + "/automation?enabled=true&token=" + token,
                         "POST", new byte[0]);
                     Assert(requested, "overlay automation endpoint");
+                    client.UploadData(root + "/flow/stop?token=" + token, "POST", new byte[0]);
+                    Assert(flowStopRequests == 1, "overlay interrupt dispatches flow stop");
+                    try { client.UploadData(root + "/flow/stop?token=wrong", "POST", new byte[0]); }
+                    catch (WebException ex)
+                    { using (var response = (HttpWebResponse)ex.Response)
+                        Assert(response.StatusCode == HttpStatusCode.Forbidden, "flow stop requires runtime token"); }
+                    try { client.DownloadString(root + "/flow/stop?token=" + token); }
+                    catch (WebException ex)
+                    { using (var response = (HttpWebResponse)ex.Response)
+                        Assert(response.StatusCode == HttpStatusCode.NotFound, "GET cannot interrupt a flow"); }
+                    Assert(flowStopRequests == 1, "unauthorized or read-only requests never dispatch stop");
                 }
             }
         }
@@ -540,14 +839,17 @@ internal static class KeyboundProbeTests
             string binary = capture.BinaryPath;
             string events = capture.EventPath;
             string summary = capture.SummaryPath;
+            string memory = capture.MemoryPath;
             capture.Record("zone", 123, BuildPacket(0x1201, 7, "prompt-alpha"));
             capture.Record("zone", 124, BuildPacket(0x1202, 8, "success"));
             capture.Mark("PROMPT_APPEARED");
+            capture.RecordMemory("AFK", "afk=12.500\tcontent=7.000\nclean");
             capture.Stop();
 
             Assert(File.Exists(binary), "binary exists");
             Assert(File.Exists(events), "events exists");
             Assert(File.Exists(summary), "summary exists");
+            Assert(File.Exists(memory), "memory probe log exists");
             using (var reader = new BinaryReader(File.OpenRead(binary), Encoding.UTF8))
             {
                 Assert(Encoding.ASCII.GetString(reader.ReadBytes(4)) == "KBP1", "binary magic");
@@ -557,9 +859,13 @@ internal static class KeyboundProbeTests
             }
             string eventText = File.ReadAllText(events);
             string summaryText = File.ReadAllText(summary);
+            string memoryText = File.ReadAllText(memory);
             Assert(eventText.Contains("0x1201"), "packet event");
             Assert(eventText.Contains("PROMPT_APPEARED"), "marker event");
             Assert(summaryText.Contains("0x1202"), "summary opcode");
+            Assert(memoryText.Contains("\tAFK\tafk") &&
+                memoryText.Contains("afk=12.500 content=7.000 clean"),
+                "memory probe record and single-line escaping");
             capture.Dispose();
         }
         finally

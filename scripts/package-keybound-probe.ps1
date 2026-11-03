@@ -98,7 +98,8 @@ Compress-Archive -LiteralPath $stage -DestinationPath $zip -CompressionLevel Opt
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($zip)
 try {
-    $names = @($archive.Entries | ForEach-Object { $_.FullName })
+    # Windows PowerShell 5.1 may emit backslashes in ZIP entry paths.
+    $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
     foreach ($requiredName in @(
         "$packageName/README.md",
         "$packageName/LICENSE",

@@ -578,6 +578,7 @@ namespace ActEnhanced.KeyboundProbe
         private const byte PacketRecord = 1;
         private const byte MarkerRecord = 2;
         private const byte EndRecord = 3;
+        private const byte MemoryRecord = 4;
         private const int QueueLimit = 25000;
         private const long MaxBinaryPartBytes = 256L * 1024L * 1024L;
         private static readonly TimeSpan NearbyWindow = TimeSpan.FromSeconds(3);
@@ -593,6 +594,7 @@ namespace ActEnhanced.KeyboundProbe
         private readonly string binaryStem;
         private readonly string eventPath;
         private readonly string summaryPath;
+        private readonly string memoryPath;
         private readonly List<string> binaryParts = new List<string>();
         private readonly object partLock = new object();
         private volatile bool accepting = true;
@@ -612,6 +614,7 @@ namespace ActEnhanced.KeyboundProbe
             binaryPath = binaryStem + ".part001.kbcap";
             eventPath = Path.Combine(captureDirectory, stem + ".events.tsv");
             summaryPath = Path.Combine(captureDirectory, stem + ".summary.txt");
+            memoryPath = Path.Combine(captureDirectory, stem + ".memory.tsv");
 
             writerThread = new Thread(WriterMain);
             writerThread.IsBackground = true;
@@ -622,6 +625,7 @@ namespace ActEnhanced.KeyboundProbe
         public string BinaryPath { get { return binaryPath; } }
         public string EventPath { get { return eventPath; } }
         public string SummaryPath { get { return summaryPath; } }
+        public string MemoryPath { get { return memoryPath; } }
         public long AcceptedPackets { get { return Interlocked.Read(ref acceptedPackets); } }
         public long DroppedPackets { get { return Interlocked.Read(ref droppedPackets); } }
         public string WriterError { get { return writerError == null ? null : writerError.Message; } }
@@ -711,6 +715,19 @@ namespace ActEnhanced.KeyboundProbe
             });
         }
 
+        public bool RecordMemory(string kind, string detail)
+        {
+            if (!accepting)
+                return false;
+            return queue.TryAdd(new CaptureRecord
+            {
+                Kind = MemoryRecord,
+                UtcTime = DateTime.UtcNow,
+                Label = String.IsNullOrWhiteSpace(kind) ? "MEMORY" : kind.Trim(),
+                Nearby = detail ?? String.Empty
+            });
+        }
+
         public void Stop()
         {
             if (!accepting)
@@ -737,6 +754,7 @@ namespace ActEnhanced.KeyboundProbe
             try
             {
                 using (var events = new StreamWriter(eventPath, false, new UTF8Encoding(false)))
+                using (var memory = new StreamWriter(memoryPath, false, new UTF8Encoding(false)))
                 {
                     BinaryWriter binary = null;
                     int partNumber = 1;
@@ -744,9 +762,16 @@ namespace ActEnhanced.KeyboundProbe
                     {
                         binary = OpenBinaryPart(partNumber);
                         events.WriteLine("utc\tdelta_ms\tkind\topcode\tlength\tactor_id\tfingerprint\tconnection\tprintable_or_marker\tnearby_3s");
+                        memory.WriteLine("utc\tdelta_ms\tkind\tdetail");
 
                         foreach (CaptureRecord record in queue.GetConsumingEnumerable())
                         {
+                            if (record.Kind == MemoryRecord)
+                            {
+                                memory.WriteLine(FormatTime(record.UtcTime) + "\t" + Delta(record.UtcTime) +
+                                    "\t" + Clean(record.Label) + "\t" + Clean(record.Nearby));
+                                continue;
+                            }
                             long estimatedBytes = record.Kind == PacketRecord
                                 ? record.Message.Length + 64L
                                 : 512L;
@@ -769,6 +794,7 @@ namespace ActEnhanced.KeyboundProbe
                                 events.WriteLine(FormatTime(record.UtcTime) + "\t" + Delta(record.UtcTime) + "\tEND");
                         }
                         events.Flush();
+                        memory.Flush();
                         binary.Flush();
                     }
                     finally

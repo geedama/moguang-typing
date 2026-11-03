@@ -46,6 +46,13 @@ namespace ActEnhanced.KeyboundProbe
 
         public bool AutoLaunchDalamud = false;
         public string TimingMode = HumanMode;
+        public int AutomationRunCount = 1;
+        public int HumanHotkeyKey = 0x70;
+        public int HumanHotkeyModifiers = 0;
+        public int WarriorHotkeyKey = 0x71;
+        public int WarriorHotkeyModifiers = 0;
+        public int CustomHotkeyKey = 0x72;
+        public int CustomHotkeyModifiers = 0;
         public int CustomReactionDelayMs = 150;
         public int CustomCharacterDelayMs = 70;
         public int CustomSubmitDelayMs = 150;
@@ -68,6 +75,19 @@ namespace ActEnhanced.KeyboundProbe
                     entries[line.Substring(0, separator).Trim()] = line.Substring(separator + 1).Trim();
                 }
                 value.AutoLaunchDalamud = ReadBool(entries, "AutoLaunchDalamud", value.AutoLaunchDalamud);
+                value.AutomationRunCount = ReadInt(entries, "AutomationRunCount", value.AutomationRunCount, 1, 999);
+                value.HumanHotkeyKey = ReadInt(entries, "HumanHotkeyKey",
+                    value.HumanHotkeyKey, 1, 255);
+                value.HumanHotkeyModifiers = ReadInt(entries, "HumanHotkeyModifiers",
+                    value.HumanHotkeyModifiers, 0, 15);
+                value.WarriorHotkeyKey = ReadInt(entries, "WarriorHotkeyKey",
+                    value.WarriorHotkeyKey, 1, 255);
+                value.WarriorHotkeyModifiers = ReadInt(entries, "WarriorHotkeyModifiers",
+                    value.WarriorHotkeyModifiers, 0, 15);
+                value.CustomHotkeyKey = ReadInt(entries, "CustomHotkeyKey",
+                    value.CustomHotkeyKey, 1, 255);
+                value.CustomHotkeyModifiers = ReadInt(entries, "CustomHotkeyModifiers",
+                    value.CustomHotkeyModifiers, 0, 15);
                 string mode;
                 if (entries.TryGetValue("TimingMode", out mode) && IsMode(mode))
                 {
@@ -102,6 +122,13 @@ namespace ActEnhanced.KeyboundProbe
                 "# Moguang Typing settings",
                 "AutoLaunchDalamud=" + AutoLaunchDalamud,
                 "TimingMode=" + TimingMode,
+                "AutomationRunCount=" + AutomationRunCount.ToString(CultureInfo.InvariantCulture),
+                "HumanHotkeyKey=" + HumanHotkeyKey.ToString(CultureInfo.InvariantCulture),
+                "HumanHotkeyModifiers=" + HumanHotkeyModifiers.ToString(CultureInfo.InvariantCulture),
+                "WarriorHotkeyKey=" + WarriorHotkeyKey.ToString(CultureInfo.InvariantCulture),
+                "WarriorHotkeyModifiers=" + WarriorHotkeyModifiers.ToString(CultureInfo.InvariantCulture),
+                "CustomHotkeyKey=" + CustomHotkeyKey.ToString(CultureInfo.InvariantCulture),
+                "CustomHotkeyModifiers=" + CustomHotkeyModifiers.ToString(CultureInfo.InvariantCulture),
                 "CustomReactionDelayMs=" + CustomReactionDelayMs.ToString(CultureInfo.InvariantCulture),
                 "CustomCharacterDelayMs=" + CustomCharacterDelayMs.ToString(CultureInfo.InvariantCulture),
                 "CustomSubmitDelayMs=" + CustomSubmitDelayMs.ToString(CultureInfo.InvariantCulture),
@@ -161,6 +188,13 @@ namespace ActEnhanced.KeyboundProbe
         {
             if (!IsMode(TimingMode)) TimingMode = HumanMode;
             TimingMode = TimingMode.ToLowerInvariant();
+            AutomationRunCount = Clamp(AutomationRunCount, 1, 999);
+            HumanHotkeyKey = Clamp(HumanHotkeyKey, 1, 255);
+            HumanHotkeyModifiers = Clamp(HumanHotkeyModifiers, 0, 15);
+            WarriorHotkeyKey = Clamp(WarriorHotkeyKey, 1, 255);
+            WarriorHotkeyModifiers = Clamp(WarriorHotkeyModifiers, 0, 15);
+            CustomHotkeyKey = Clamp(CustomHotkeyKey, 1, 255);
+            CustomHotkeyModifiers = Clamp(CustomHotkeyModifiers, 0, 15);
             CustomReactionDelayMs = Clamp(CustomReactionDelayMs, 0, 5000);
             CustomCharacterDelayMs = Clamp(CustomCharacterDelayMs, 0, 1000);
             CustomSubmitDelayMs = Clamp(CustomSubmitDelayMs, 0, 5000);

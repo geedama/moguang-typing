@@ -17,6 +17,7 @@ namespace ActEnhanced.KeyboundProbe
         private bool disposed;
 
         public event Action<bool> AutomationRequested;
+        public event Action FlowStopRequested;
 
         public int Port { get; private set; }
         public string Error { get; private set; }
@@ -128,6 +129,14 @@ namespace ActEnhanced.KeyboundProbe
                 if (handler != null) handler(enabled);
                 Respond(stream, 200, "application/json; charset=utf-8",
                     "{\"ok\":true,\"enabled\":" + (enabled ? "true" : "false") + "}");
+                return;
+            }
+            if (String.Equals(uri.AbsolutePath, "/flow/stop", StringComparison.Ordinal) &&
+                String.Equals(method, "POST", StringComparison.OrdinalIgnoreCase))
+            {
+                Action handler = FlowStopRequested;
+                if (handler != null) handler();
+                Respond(stream, 200, "application/json; charset=utf-8", "{\"ok\":true}");
                 return;
             }
             Respond(stream, 404, "application/json", "{\"ok\":false,\"error\":\"not_found\"}");

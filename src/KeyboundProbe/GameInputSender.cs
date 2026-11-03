@@ -129,6 +129,79 @@ namespace ActEnhanced.KeyboundProbe
                 : GameInputResult.NativeInputFailed;
         }
 
+        internal static bool IsGameForeground() { return IsFfxivForeground(); }
+
+        internal static void ActivateGameWindow()
+        {
+            IntPtr window = FindFfxivWindow();
+            if (window != IntPtr.Zero) SetForegroundWindow(window);
+        }
+
+        internal static GameInputResult TargetRegistrationNpc(Func<bool> current)
+        {
+            if (!CanContinue(current)) return GameInputResult.Cancelled;
+            if (!IsFfxivForeground()) return GameInputResult.FfxivNotForeground;
+            // Escape opens SystemMenu when chat is not focused. Targeting must only send F12.
+            return SendPhysicalHeldKey(0x7B, 80) ? GameInputResult.Sent : GameInputResult.NativeInputFailed;
+        }
+
+        internal static GameInputResult CloseObservedSystemMenu(Func<bool> current)
+        {
+            // Caller must re-read SystemMenu and confirm it is visible immediately before this call.
+            if (!CanContinue(current)) return GameInputResult.Cancelled;
+            if (!IsFfxivForeground()) return GameInputResult.FfxivNotForeground;
+            return SendPhysicalHeldKey(0x1B, 60) ? GameInputResult.Sent : GameInputResult.NativeInputFailed;
+        }
+
+        internal static GameInputResult InteractWithTarget(Func<bool> current)
+        {
+            if (!CanContinue(current)) return GameInputResult.Cancelled;
+            if (!IsFfxivForeground()) return GameInputResult.FfxivNotForeground;
+            return SendPhysicalHeldKey(0x60, 60) ? GameInputResult.Sent : GameInputResult.NativeInputFailed;
+        }
+
+        internal static GameInputResult ClickFlowButton(KtgButtonProbe button, Func<bool> current)
+        {
+            if (!CanContinue(current)) return GameInputResult.Cancelled;
+            if (!IsFfxivForeground()) return GameInputResult.FfxivNotForeground;
+            IntPtr window = FindFfxivWindow();
+            NativeRect rect;
+            if (window == IntPtr.Zero || button == null || !button.Enabled ||
+                !GetClientRect(window, out rect) || Single.IsNaN(button.X) || Single.IsNaN(button.Y) ||
+                button.X < 0 || button.Y < 0 || button.X >= rect.Right || button.Y >= rect.Bottom)
+                return GameInputResult.NativeInputFailed;
+            var point = new NativePoint { X = (int)button.X, Y = (int)button.Y };
+            if (!ClientToScreen(window, ref point) || !SetCursorPos(point.X, point.Y))
+                return GameInputResult.NativeInputFailed;
+            Thread.Sleep(60);
+            if (!CanContinue(current) || !IsFfxivForeground()) return GameInputResult.Cancelled;
+            var down = new Input { Type = 0, Union = new InputUnion { Mouse = new MouseInput { Flags = 0x0002 } } };
+            if (SendInput(1, new[] { down }, NativeInputSize) != 1) return GameInputResult.NativeInputFailed;
+            Thread.Sleep(60);
+            // Always pair mouse-up, even if cancellation happens after mouse-down.
+            var up = new Input { Type = 0, Union = new InputUnion { Mouse = new MouseInput { Flags = 0x0004 } } };
+            return SendInput(1, new[] { up }, NativeInputSize) == 1
+                ? GameInputResult.Sent : GameInputResult.NativeInputFailed;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint { public int X, Y; }
+
+        [DllImport("user32.dll")]
+        private static extern bool ClientToScreen(IntPtr window, ref NativePoint point);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetCursorPos(int x, int y);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetClientRect(IntPtr window, out NativeRect rect);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr window);
+
         public static GameInputResult PostUnicodeToFfxiv(string text, int characterDelayMilliseconds,
             Func<bool> continuePredicate)
         {

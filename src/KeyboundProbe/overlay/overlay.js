@@ -4,6 +4,9 @@
   const runtime = () => window.KeyboundOverlayRuntime;
   let state = null;
   let toggleBusy = false;
+  let flowStopBusy = false;
+  let flowStopRequestedAt = 0;
+  let serviceConnected = false;
 
   function render(next) {
     if (!next || next.Version !== 1) return;
@@ -30,6 +33,15 @@
     toggle.setAttribute('aria-pressed', next.AutomationEnabled ? 'true' : 'false');
     toggle.disabled = toggleBusy || !next.Ready;
     byId('toggle-label').textContent = next.AutomationEnabled ? '自动攻击开启' : '自动攻击关闭';
+    if (!next.FlowActive) flowStopBusy = false;
+    const completed = Math.max(0, Number(next.FlowCompletedRuns) || 0);
+    const total = Math.max(0, Number(next.FlowTargetRuns) || 0);
+    byId('flow-progress').textContent = total ? `连续流程（测试）：已完成 ${completed}/${total} 局` : '连续流程（测试）未启动';
+    byId('flow-status').textContent = flowStopBusy ? '正在中断，等待 ACT 确认' :
+      (next.FlowStatus || '在 ACT 中设置局数并启动');
+    byId('flow-status').title = next.FlowStatus || '';
+    byId('flow-stop').disabled = flowStopBusy || !next.Ready || !next.FlowActive || !serviceConnected;
+    byId('flow-stop').textContent = flowStopBusy ? '中断中…' : '中断流程';
   }
 
   async function pollState() {
@@ -40,10 +52,15 @@
         cache: 'no-store',
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      serviceConnected = true;
+      if (flowStopBusy && Date.now() - flowStopRequestedAt > 5000) flowStopBusy = false;
       render(await response.json());
     } catch (_) {
+      serviceConnected = false;
       document.body.classList.remove('online');
       byId('automation-toggle').disabled = true;
+      byId('flow-stop').disabled = true;
+      byId('flow-status').textContent = 'ACT 连接中断，请在 ACT 页面停止流程';
     }
   }
 
@@ -67,18 +84,44 @@
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       await pollState();
+    } catch (_) {
+      serviceConnected = false;
+      byId('flow-status').textContent = '控制请求失败，请在 ACT 页面停止流程';
     } finally {
       toggleBusy = false;
-      if (state) render(state);
+      if (state && serviceConnected) render(state);
+    }
+  });
+
+  byId('flow-stop').addEventListener('click', async () => {
+    const config = runtime();
+    if (!config || !state || !state.FlowActive || flowStopBusy || !serviceConnected) return;
+    flowStopBusy = true;
+    flowStopRequestedAt = Date.now();
+    render(state);
+    try {
+      const response = await fetch(`${config.endpoint}/flow/stop?token=${encodeURIComponent(config.token)}`, {
+        method: 'POST', cache: 'no-store',
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      await pollState();
+    } catch (_) {
+      flowStopBusy = false;
+      byId('flow-stop').disabled = !serviceConnected;
+      byId('flow-stop').textContent = '重试中断';
+      byId('flow-status').textContent = '中断请求失败，请重试或在 ACT 页面停止';
     }
   });
 
   const preview = new URLSearchParams(location.search).get('preview') === '1';
   if (preview) {
+    serviceConnected = true;
     render({
       Version: 1, Ready: true, NetworkConnected: true, TargetCount: 5,
       InputVisible: true, InputFocused: true, InputText: '单手是枪的男人',
       AutomationEnabled: true, AutomationStatus: '自动输入：已回车提交，等待攻击确认',
+      FlowActive: true, FlowCompletedRuns: 3, FlowTargetRuns: 10, FlowStage: 'Combat',
+      FlowStatus: '第 4 局，自动答题中',
       AttemptState: '等待攻击确认', EntityId: '0x40005C64', TargetText: '单手是枪的男人',
       BudgetMilliseconds: 1500, Score: '分数：10300', Phase: '阶段：0x2',
       LastEvent: 'SUBMIT', LastEventDetail: 'waiting-confirmation; remainingMs=184',
